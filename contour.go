@@ -948,6 +948,7 @@ func isPointEqual(a, b image.Point) bool {
 	return false
 }
 
+// TODO: This needs more work, clusters should be considered!
 func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 	newlist := make([]*LineSegment, 0)
 
@@ -961,7 +962,7 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 			log.Printf("%d (%d,%d):(%d,%d)\n", i, lsStart.PtStart().X, lsStart.PtStart().Y, lsStart.PtEnd().X, lsStart.PtEnd().Y)
 		}
 
-		// only apply optimization within current cluster
+		// Not sure this will work
 		if isPointEqual(lsStart.PtEnd(), lsEnd.PtStart()) {
 			vStart := lsStart.AsVector()
 			vEnd := lsEnd.AsVector()
@@ -969,22 +970,33 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 			vEnd.Norm()
 			dev := vStart.Dot(&vEnd)
 
-			// Optimize??
+			// line segments aligned?
 			if dev > glbConfig.OptimizationCutOffAngle {
 				// Walk along until deviation is too big
 				if glbConfig.Verbose {
 					log.Printf("  -> Opt\n")
 				}
-				lsPrev := lsEnd
+				lsPrev := lsStart
 				for ; dev > glbConfig.OptimizationCutOffAngle; i++ {
-					if glbConfig.Verbose {
-						log.Printf("   %d, dev: %f\n", i, dev)
-					}
+
+					// TODO: I need some kind of cluster check in the loop as well...
+
 					if i == len(lineSegments) {
 						break
 					}
 					lsEnd = lineSegments[i]
-					lsPrev = lsEnd // Save this
+					if glbConfig.Verbose {
+						log.Printf("   %d, (%d,%d):(%d,%d) - dev: %f\n", i, lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y, dev)
+						//log.Printf("   	    (%d,%d):(%d,%d)\n", lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y)
+					}
+
+					// TODO: Check cluster here, if this does not belong to the same cluster, break loop and stop line optimization
+					if !isPointEqual(lsPrev.PtEnd(), lsEnd.PtStart()) {
+						log.Printf("    Break Opt, new cluster detected\n")
+						break
+					}
+
+					lsPrev = lsEnd // Save this, GO has no while loop so this is a bit ugly
 
 					vEnd := lsEnd.AsVector()
 					vEnd.Norm()
@@ -1019,7 +1031,7 @@ func DumpLineSegments(lineSegments []*LineSegment) {
 	//OptimizeLineSegments(lineSegments)
 
 	idxPoly := 0
-	for _, ls := range lineSegments {
+	for i, ls := range lineSegments {
 		if lsPrev != nil {
 			if !isPointEqual(lsPrev.PtEnd(), ls.PtStart()) {
 				idxPoly++
@@ -1031,7 +1043,7 @@ func DumpLineSegments(lineSegments []*LineSegment) {
 				dev = vPrev.Dot(&vCurr)
 			}
 		}
-		fmt.Printf("%d (%d,%d):(%d,%d)\n", idxPoly, ls.PtStart().X, ls.PtStart().Y, ls.PtEnd().X, ls.PtEnd().Y)
+		fmt.Printf("%d P:%d (%d,%d):(%d,%d)\n", i, idxPoly, ls.PtStart().X, ls.PtStart().Y, ls.PtEnd().X, ls.PtEnd().Y)
 		if lsPrev != nil {
 			if dev > 0.95 {
 				fmt.Printf("  dev: %f\n", dev)
@@ -1108,12 +1120,23 @@ func DrawLineSegments(lineSegments []*LineSegment, dst *image.RGBA) {
 
 	col := color.RGBA{255, 255, 255, 255}
 	ptcol := color.RGBA{255, 0, 0, 255}
+	ptcol2 := color.RGBA{0, 0, 255, 255}
 
 	for i := range lineSegments {
 		ls := lineSegments[i]
 		//DrawLine(dst, ls.PtStart(), ls.PtEnd(), color.RGBA{0, 0, uint8(i & 255), 255})
 		DrawLine(dst, ls.PtStart(), ls.PtEnd(), col)
-		PutPixel(dst, ls.PtStart(), ptcol)
+		if i == 0 {
+			hl := image.Pt(ls.PtStart().X-4, ls.PtStart().Y)
+			hr := image.Pt(ls.PtStart().X+4, ls.PtStart().Y)
+			vu := image.Pt(ls.PtStart().X, ls.PtStart().Y-4)
+			vd := image.Pt(ls.PtStart().X, ls.PtStart().Y+4)
+			DrawLine(dst, hl, hr, ptcol2)
+			DrawLine(dst, vu, vd, ptcol2)
+			//PutPixel(dst, ls.PtStart(), ptcol2)
+		} else {
+			PutPixel(dst, ls.PtStart(), ptcol)
+		}
 	}
 }
 
