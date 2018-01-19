@@ -66,35 +66,41 @@ const (
 )
 
 type Config struct {
-	GreyThresholdLevel    uint8
-	ClusterCutOffDistance float64
-	LineCutOffDistance    float64
-	LineCutOffAngle       float64
-	LongLineDistance      float64
-	BlockSize             int
-	FilledBlockLevel      float32
+	GreyThresholdLevel      uint8
+	ClusterCutOffDistance   float64
+	LineCutOffDistance      float64
+	LineCutOffAngle         float64
+	LongLineDistance        float64
+	OptimizationCutOffAngle float64
+	BlockSize               int
+	FilledBlockLevel        float32
 	// Options
 	Verbose                  bool
 	Mode                     OpMode
 	Input                    string
 	Output                   string
 	GenerateIntermediateData bool
+	ListVectors              bool
+	Optimize                 bool
 }
 
 var glbConfig = Config{
-	GreyThresholdLevel:    32,   // This is the contour threshold value
-	ClusterCutOffDistance: 50,   // This is when a point is considered to be a new cluster
-	LineCutOffDistance:    10.0, // Creates new segment when distance is too far also not dependent on the distance vector in case of sparse clusters
-	LineCutOffAngle:       0.5,  // Creates a new segment when deviating angle hits this threshold, only comes in play when we can derive a directional vector (see: LongLineDistance)
-	LongLineDistance:      3.0,  // Distance to search before capturing the directional vector for the segment
-	BlockSize:             64,   // Not used
-	FilledBlockLevel:      0.5,  // Not used
+	GreyThresholdLevel:      32,   // This is the contour threshold value
+	ClusterCutOffDistance:   50,   // This is when a point is considered to be a new cluster
+	LineCutOffDistance:      10.0, // Creates new segment when distance is too far also not dependent on the distance vector in case of sparse clusters
+	LineCutOffAngle:         0.5,  // Creates a new segment when deviating angle hits this threshold, only comes in play when we can derive a directional vector (see: LongLineDistance)
+	LongLineDistance:        3.0,  // Distance to search before capturing the directional vector for the segment
+	BlockSize:               64,   // Not used
+	FilledBlockLevel:        0.5,  // Not used
+	OptimizationCutOffAngle: 0.97,
 	// Options
 	Verbose: false, // Switch on heavy debug output
 	Mode:    OpModeGenerate,
 	Input:   "",
 	Output:  "",
 	GenerateIntermediateData: false,
+	ListVectors:              false,
+	Optimize:                 false,
 }
 
 type BlockMap map[int]*Block
@@ -136,6 +142,10 @@ func parseOptions() {
 			} else if arg == "-lca" {
 				i++
 				glbConfig.LineCutOffAngle, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-oca" {
+				i++
+				glbConfig.OptimizationCutOffAngle, _ = strconv.ParseFloat(os.Args[i], 64)
+				glbConfig.Optimize = true
 			} else if arg == "-lld" {
 				i++
 				glbConfig.LongLineDistance, _ = strconv.ParseFloat(os.Args[i], 64)
@@ -154,8 +164,14 @@ func parseOptions() {
 					case 'm':
 						glbConfig.GenerateIntermediateData = true
 						break
+					case 'o':
+						glbConfig.Optimize = true
+						break
 					case 'v':
 						glbConfig.Verbose = true
+						break
+					case 'l':
+						glbConfig.ListVectors = true
 						break
 					case '?':
 					case 'h':
@@ -198,6 +214,7 @@ func printHelpAndExit() {
 	fmt.Println("PNG is only format supported for input images")
 	fmt.Println("Options")
 	fmt.Println("  g   Generate line segments from PNG save to Segment file/directory (default)")
+	fmt.Println("  o   Enable optimization")
 	fmt.Println("  r   Render image from segment file/directory and save as PNG file/directory")
 	fmt.Println("  v   Switch on extensive output")
 	fmt.Println("  ?/h This screen")
@@ -206,6 +223,7 @@ func printHelpAndExit() {
 	fmt.Printf("  lca <float>   Line Cutoff Angle, break condition for new segment, default: %f\n", glbConfig.LineCutOffAngle)
 	fmt.Printf("  lld <float>   Long Line Distance when searching for reference vector, default: %f\n", glbConfig.LongLineDistance)
 	fmt.Printf("  ccd <float>   Cluster Cutoff Distance, break condition for a new polygon, default: %f\n", glbConfig.ClusterCutOffDistance)
+	fmt.Printf("  oca <float>   Optimization Cutoff Angle, break condition for line segment concatination, default: %f\n", glbConfig.OptimizationCutOffAngle)
 	os.Exit(1)
 }
 
@@ -313,6 +331,18 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 	points := blocks.ExtractContour()
 	lineSegments := ExtractVectors(points)
 	if lineSegments != nil {
+
+		if glbConfig.ListVectors == true {
+			DumpLineSegments(lineSegments)
+		}
+		if glbConfig.Optimize {
+			lineSegments = OptimizeLineSegments(lineSegments)
+		}
+		//lsOpt := OptimizeLineSegments(lineSegments)
+		// if glbConfig.ListVectors == true {
+		// 	DumpLineSegments(lsOpt)
+		// }
+
 		SaveLineSegments(lineSegments, segmentsFile)
 		numSegments = len(lineSegments)
 	}
@@ -904,7 +934,6 @@ func ExtractVectors(points []image.Point) []*LineSegment {
 		dbgPoints = dbgPoints + 1
 
 	}
-
 	//log.Printf("Extract Vectors, got %d line segments\n", dbgPoints)
 	return lineSegments
 }
@@ -912,6 +941,114 @@ func ExtractVectors(points []image.Point) []*LineSegment {
 //
 // Testing and drawing functions below this point
 //
+func isPointEqual(a, b image.Point) bool {
+	if (a.X == b.X) && (a.Y == b.Y) {
+		return true
+	}
+	return false
+}
+
+func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
+	newlist := make([]*LineSegment, 0)
+
+	log.Printf("")
+
+	for i := 1; i < len(lineSegments); i++ {
+		lsStart := lineSegments[i-1]
+		lsEnd := lineSegments[i]
+
+		if glbConfig.Verbose {
+			log.Printf("%d (%d,%d):(%d,%d)\n", i, lsStart.PtStart().X, lsStart.PtStart().Y, lsStart.PtEnd().X, lsStart.PtEnd().Y)
+		}
+
+		// only apply optimization within current cluster
+		if isPointEqual(lsStart.PtEnd(), lsEnd.PtStart()) {
+			vStart := lsStart.AsVector()
+			vEnd := lsEnd.AsVector()
+			vStart.Norm()
+			vEnd.Norm()
+			dev := vStart.Dot(&vEnd)
+
+			// Optimize??
+			if dev > glbConfig.OptimizationCutOffAngle {
+				// Walk along until deviation is too big
+				if glbConfig.Verbose {
+					log.Printf("  -> Opt\n")
+				}
+				lsPrev := lsEnd
+				for ; dev > glbConfig.OptimizationCutOffAngle; i++ {
+					if glbConfig.Verbose {
+						log.Printf("   %d, dev: %f\n", i, dev)
+					}
+					if i == len(lineSegments) {
+						break
+					}
+					lsEnd = lineSegments[i]
+					lsPrev = lsEnd // Save this
+
+					vEnd := lsEnd.AsVector()
+					vEnd.Norm()
+					dev = vStart.Dot(&vEnd)
+				}
+				if glbConfig.Verbose {
+					log.Printf("  <- Opt, dev: %f\n", dev)
+				}
+				// New segment is always between lsStart.Start and lsPrev.End
+				lsNew := NewLineSegment(lsStart.PtStart(), lsPrev.PtEnd())
+				if glbConfig.Verbose {
+					log.Printf("%d (%d,%d):(%d,%d)\n", i, lsNew.PtStart().X, lsNew.PtStart().Y, lsNew.PtEnd().X, lsNew.PtEnd().Y)
+				}
+
+				newlist = append(newlist, &lsNew)
+			} else {
+				// Can't optimize this segment, just push it to the new list
+				newlist = append(newlist, lsStart)
+			}
+
+		}
+	}
+
+	log.Printf("Optimize LS Before: %d, after: %d\n", len(lineSegments), len(newlist))
+	return newlist
+}
+
+func DumpLineSegments(lineSegments []*LineSegment) {
+	var lsPrev *LineSegment = nil
+	var dev float64 = 0
+
+	//OptimizeLineSegments(lineSegments)
+
+	idxPoly := 0
+	for _, ls := range lineSegments {
+		if lsPrev != nil {
+			if !isPointEqual(lsPrev.PtEnd(), ls.PtStart()) {
+				idxPoly++
+			} else {
+				vPrev := lsPrev.AsVector()
+				vCurr := ls.AsVector()
+				vPrev.Norm()
+				vCurr.Norm()
+				dev = vPrev.Dot(&vCurr)
+			}
+		}
+		fmt.Printf("%d (%d,%d):(%d,%d)\n", idxPoly, ls.PtStart().X, ls.PtStart().Y, ls.PtEnd().X, ls.PtEnd().Y)
+		if lsPrev != nil {
+			if dev > 0.95 {
+				fmt.Printf("  dev: %f\n", dev)
+			}
+		}
+		lsPrev = ls
+	}
+}
+
+func PutPixel(dst *image.RGBA, p image.Point, col color.RGBA) {
+	xPos := p.X
+	yPos := p.Y
+	dst.SetRGBA(int(xPos), int(yPos), col)
+	dst.SetRGBA(int(xPos)+1, int(yPos), col)
+	dst.SetRGBA(int(xPos), int(yPos)+1, col)
+	dst.SetRGBA(int(xPos)+1, int(yPos)+1, col)
+}
 
 func DrawLine(dst *image.RGBA, a, b image.Point, col color.RGBA) {
 	vlen := VecLen(a, b)
@@ -970,11 +1107,13 @@ func DrawLineSegments(lineSegments []*LineSegment, dst *image.RGBA) {
 	// DrawTestVectors(dst)
 
 	col := color.RGBA{255, 255, 255, 255}
+	ptcol := color.RGBA{255, 0, 0, 255}
 
 	for i := range lineSegments {
 		ls := lineSegments[i]
 		//DrawLine(dst, ls.PtStart(), ls.PtEnd(), color.RGBA{0, 0, uint8(i & 255), 255})
 		DrawLine(dst, ls.PtStart(), ls.PtEnd(), col)
+		PutPixel(dst, ls.PtStart(), ptcol)
 	}
 }
 
