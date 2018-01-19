@@ -36,3 +36,4 @@ Options for generating
   lca <float>   Line Cutoff Angle, break condition for new segment, default: 0.500000
   lld <float>   Long Line Distance when searching for reference vector, default: 3.000000
   ccd <float>   Cluster Cutoff Distance, break condition for a new polygon, default: 50.000000
+  oca <float>   Optimization Cutoff Angle, break condition for line segment concatination, default: 0.970000
