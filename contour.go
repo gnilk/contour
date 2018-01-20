@@ -952,7 +952,7 @@ func isPointEqual(a, b image.Point) bool {
 func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 	newlist := make([]*LineSegment, 0)
 
-	log.Printf("")
+	//	log.Printf("")
 
 	for i := 1; i < len(lineSegments); i++ {
 		lsStart := lineSegments[i-1]
@@ -979,8 +979,6 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 				lsPrev := lsStart
 				for ; dev > glbConfig.OptimizationCutOffAngle; i++ {
 
-					// TODO: I need some kind of cluster check in the loop as well...
-
 					if i == len(lineSegments) {
 						break
 					}
@@ -990,9 +988,11 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 						//log.Printf("   	    (%d,%d):(%d,%d)\n", lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y)
 					}
 
-					// TODO: Check cluster here, if this does not belong to the same cluster, break loop and stop line optimization
+					// cluster check, if this does not belong to the same cluster (discontinuation), break loop and stop line optimization
 					if !isPointEqual(lsPrev.PtEnd(), lsEnd.PtStart()) {
-						log.Printf("    Break Opt, new cluster detected\n")
+						if glbConfig.Verbose {
+							log.Printf("    Break Opt, new cluster detected\n")
+						}
 						break
 					}
 
