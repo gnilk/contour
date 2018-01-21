@@ -28,7 +28,38 @@ package main
 //  ffmpeg -i ~gnilk/Downloads/CoolMusicVideo.avi -f mp3 -vn music.mp3
 //
 // Mix video with encoded PNG's
-//   ffmpeg -i video.avi -u music.mp3 -codec copy -shortest mixed.avi
+//   ffmpeg -i video.avi -i music.mp3 -codec copy -shortest mixed.avi
+//
+// Examples on how to use this:
+//   # Generate vectors from image.png save to image.seg and rescale to 255 pixels maintain aspect
+//   go run contour.go -g -w 255 image.png image.seg
+//
+//   # As above but override aspect calculation
+//   go run contour.go -g -w 255 -h 255 image.png image.seg
+//
+//   # Render segments to image (image.seg.png), image size is 256x256
+//   go run contour.go -r -w 256 -h 256 image.seg image.seg.png
+//
+//   # generate segments/vectors from all files in imagefiles save in 'segmentfiles'
+//   go run contour.go -g imagefiles/ segmentfiles/
+//
+//   # generate images for all segments files in 'segmentfiles' save in 'segimages'
+//   go run contour.go -r -w 256 -h 256 segmentfiles/ segimages/
+//
+//
+//   Full script to convert a video
+//   1) Convert video to frames
+//   	ffmpeg -i video.avi images/image%d.png
+//
+//   2) Extract vector segments
+//   	go run contour.go -g images/ segments/
+//
+//	 3) Generate images from vector segments
+//   	go run contour.go -r -w 1920 -h 1080 segments/ segimages/
+//
+//	 4) Generate AVI from images
+//   	ffmpeg -i segimages/image%d.png.seg.png video.avi
+//
 //
 
 import (
@@ -65,6 +96,14 @@ const (
 	OpModeRender   OpMode = 20
 )
 
+type DataMode int64
+
+const (
+	_                      = iota
+	DataModeInt8  DataMode = 10
+	DataModeInt16 DataMode = 20
+)
+
 type Config struct {
 	GreyThresholdLevel      uint8
 	ClusterCutOffDistance   float64
@@ -72,8 +111,11 @@ type Config struct {
 	LineCutOffAngle         float64
 	LongLineDistance        float64
 	OptimizationCutOffAngle float64
+	ContrastFactor          float64
 	BlockSize               int
 	FilledBlockLevel        float32
+	Width                   int
+	Height                  int
 	// Options
 	Verbose                  bool
 	Mode                     OpMode
@@ -82,6 +124,8 @@ type Config struct {
 	GenerateIntermediateData bool
 	ListVectors              bool
 	Optimize                 bool
+	Rescale                  bool
+	DataMode                 DataMode
 }
 
 var glbConfig = Config{
@@ -93,6 +137,9 @@ var glbConfig = Config{
 	BlockSize:               64,   // Not used
 	FilledBlockLevel:        0.5,  // Not used
 	OptimizationCutOffAngle: 0.97,
+	ContrastFactor:          2,
+	Width:                   0,
+	Height:                  0,
 	// Options
 	Verbose: false, // Switch on heavy debug output
 	Mode:    OpModeGenerate,
@@ -101,6 +148,8 @@ var glbConfig = Config{
 	GenerateIntermediateData: false,
 	ListVectors:              false,
 	Optimize:                 false,
+	Rescale:                  false,
+	DataMode:                 DataModeInt16,
 }
 
 type BlockMap map[int]*Block
@@ -139,9 +188,16 @@ func parseOptions() {
 			if arg == "-lcd" {
 				i++
 				glbConfig.LineCutOffDistance, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-gl" {
+				i++
+				tmp, _ := strconv.Atoi(os.Args[i])
+				glbConfig.GreyThresholdLevel = uint8(tmp)
 			} else if arg == "-lca" {
 				i++
 				glbConfig.LineCutOffAngle, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-cnt" {
+				i++
+				glbConfig.ContrastFactor, _ = strconv.ParseFloat(os.Args[i], 64)
 			} else if arg == "-oca" {
 				i++
 				glbConfig.OptimizationCutOffAngle, _ = strconv.ParseFloat(os.Args[i], 64)
@@ -152,6 +208,16 @@ func parseOptions() {
 			} else if arg == "-ccd" {
 				i++
 				glbConfig.ClusterCutOffDistance, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-datamode" {
+				i++
+				mode := os.Args[i]
+				if mode == "int8" {
+					glbConfig.DataMode = DataModeInt8
+				} else if mode == "int16" {
+					glbConfig.DataMode = DataModeInt16
+				} else {
+					log.Fatal("Illegal datamode, int8 or int16 is legal")
+				}
 			} else if arg[0] == '-' {
 				for j := 0; j < len(arg); j++ {
 					switch arg[j] {
@@ -173,8 +239,17 @@ func parseOptions() {
 					case 'l':
 						glbConfig.ListVectors = true
 						break
-					case '?':
+					case 'w':
+						i++
+						glbConfig.Width, _ = strconv.Atoi(os.Args[i])
+						glbConfig.Rescale = true
+						break
 					case 'h':
+						i++
+						glbConfig.Height, _ = strconv.Atoi(os.Args[i])
+						glbConfig.Rescale = true
+						break
+					case '?':
 						printHelpAndExit()
 						break
 					}
@@ -216,21 +291,26 @@ func printHelpAndExit() {
 	fmt.Println("  g   Generate line segments from PNG save to Segment file/directory (default)")
 	fmt.Println("  o   Enable optimization")
 	fmt.Println("  r   Render image from segment file/directory and save as PNG file/directory")
-	fmt.Println("  v   Switch on extensive output")
-	fmt.Println("  ?/h This screen")
+	fmt.Println("  v   Switch on extensive output (this also renders debug data in the image)")
+	fmt.Println("  w   Generate: Rescale to width. Render: Use this width for destination bitmap")
+	fmt.Println("  h   Generate: Rescale to height. Render: Use this height for destination bitmap")
+	fmt.Println("  ?   This screen")
 	fmt.Println("Options for generating")
+	fmt.Printf("  gl   <int>    Grey threshold level for contour lines when scanning bitmap, default: %d\n", glbConfig.GreyThresholdLevel)
+	fmt.Printf("  cnt <float>   Image contrast factor, default: %f\n", glbConfig.ContrastFactor)
 	fmt.Printf("  lcd <float>   Line Cutoff Distance, break condition for new segment, default: %f\n", glbConfig.LineCutOffDistance)
 	fmt.Printf("  lca <float>   Line Cutoff Angle, break condition for new segment, default: %f\n", glbConfig.LineCutOffAngle)
 	fmt.Printf("  lld <float>   Long Line Distance when searching for reference vector, default: %f\n", glbConfig.LongLineDistance)
 	fmt.Printf("  ccd <float>   Cluster Cutoff Distance, break condition for a new polygon, default: %f\n", glbConfig.ClusterCutOffDistance)
 	fmt.Printf("  oca <float>   Optimization Cutoff Angle, break condition for line segment concatination, default: %f\n", glbConfig.OptimizationCutOffAngle)
+	fmt.Printf("Other options:")
+	fmt.Printf("  datamode <int8/int16>  Specify bitsize in segment file (read/write), default is int16\n")
 	os.Exit(1)
 }
 
 func generateDataFromConfig() {
 
 	isInputDir := isDir(glbConfig.Input)
-
 	if isInputDir {
 		if !isDir(glbConfig.Output) {
 			log.Fatal("If input is directory output must be directory!")
@@ -238,6 +318,7 @@ func generateDataFromConfig() {
 		log.Printf("Multi Processing Mode: %s -> %s\n", glbConfig.Input, glbConfig.Output)
 		if glbConfig.GenerateIntermediateData {
 			log.Println("WARN: Intermediate files not available in multi processing mode")
+			glbConfig.GenerateIntermediateData = false // Switch this off!!
 		}
 		multiFileTest(glbConfig.Input, glbConfig.Output)
 	} else {
@@ -252,13 +333,18 @@ func generateDataFromConfig() {
 }
 
 func renderDataFromConfig() {
+
+	if (glbConfig.Width == 0) || (glbConfig.Height == 0) {
+		log.Fatal("Render needs width (-w) and height (-h) for destination image!")
+	}
+
 	isInputDir := isDir(glbConfig.Input)
 	if isInputDir {
 		if !isDir(glbConfig.Output) {
 			log.Fatal("If input is directory output must be directory!")
 		}
-		log.Fatal("Not yet implemented!")
-		//readAndDrawMultiSeg(1, 3080, "segimages/")
+		//log.Fatal("Not yet implemented!")
+		readAndDrawMultiSeg(1, 500, glbConfig.Input, glbConfig.Output)
 	} else {
 		log.Printf("Render Single File, %s -> %s\n", glbConfig.Input, glbConfig.Output)
 		readAndDrawSegmentFile(glbConfig.Input, glbConfig.Output)
@@ -325,23 +411,44 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 	width := img.Bounds().Dx()
 	height := img.Bounds().Dy()
 
+	img = increaseImageContrast(img)
+
+	if glbConfig.GenerateIntermediateData {
+		SaveImage(img, "pre-processed.png")
+	}
+
+	if glbConfig.Rescale {
+		if glbConfig.Height == 0 {
+			aspectRatio := float64(height) / float64(width)
+			glbConfig.Height = int(float64(glbConfig.Width) * aspectRatio)
+		} else if glbConfig.Width == 0 {
+			aspectRatio := float64(width) / float64(height)
+			glbConfig.Width = int(float64(glbConfig.Height) * aspectRatio)
+		}
+		log.Printf(" Rescale to: %dx%d\n", glbConfig.Width, glbConfig.Height)
+	} else {
+		glbConfig.Width = width
+		glbConfig.Height = height
+	}
+
+	// Preprocess image here if necessary
+
 	numSegments := 0
 
 	blocks := NewBlockMapFromImage(img)
 	points := blocks.ExtractContour()
 	lineSegments := ExtractVectors(points)
 	if lineSegments != nil {
-
 		if glbConfig.ListVectors == true {
 			DumpLineSegments(lineSegments)
 		}
 		if glbConfig.Optimize {
 			lineSegments = OptimizeLineSegments(lineSegments)
 		}
-		//lsOpt := OptimizeLineSegments(lineSegments)
-		// if glbConfig.ListVectors == true {
-		// 	DumpLineSegments(lsOpt)
-		// }
+		if glbConfig.Rescale {
+			// Pass in original width/height
+			lineSegments = RescaleLineSegments(lineSegments, width, height)
+		}
 
 		SaveLineSegments(lineSegments, segmentsFile)
 		numSegments = len(lineSegments)
@@ -349,23 +456,75 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 
 	if len(contourFile) > 0 {
 		log.Printf("Saving contour image to %s\n", contourFile)
-		contImg := image.NewRGBA(image.Rect(0, 0, width, height))
+
+		contImg := image.NewRGBA(image.Rect(0, 0, glbConfig.Width, glbConfig.Height))
 		DrawLineSegments(lineSegments, contImg)
 		SaveImage(contImg, contourFile)
 	}
 	return numSegments
 }
 
+func rescale(v uint8) uint8 {
+	tmp := float64(v) / float64(255)
+	tmp = math.Pow(tmp, glbConfig.ContrastFactor)
+	v = uint8(tmp * 255)
+	return v
+}
+
+func increaseImageContrast(img image.Image) image.Image {
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			c := img.At(x, y).(color.RGBA)
+			c.R = rescale(c.R)
+			c.G = rescale(c.G)
+			c.B = rescale(c.B)
+			dst.Set(x, y, c)
+		}
+	}
+	return dst
+
+}
+
 //
 // readAndDrawMultiSeg renders all segment files in a directory to images in another directory
 //
-func readAndDrawMultiSeg(idxStart, idxEnd int, outputdir string) {
-	for i := idxStart; i < idxEnd; i++ {
-		inputName := path.Join("segdir/", fmt.Sprintf("apple%d.png.seg", i))
-		outputName := path.Join(outputdir, fmt.Sprintf("seq_cont_%d.png", i))
-		log.Printf("%s\n", outputName)
-		readAndDrawSegmentFile(inputName, outputName)
+func readAndDrawMultiSeg(idxStart, idxEnd int, inputdir, outputdir string) {
+	// TODO: Enhance this to scan the directory build a list and process that list
+	//       See: multiFileTest
+
+	dir, err := os.Open(inputdir)
+	if err != nil {
+		log.Fatal("readAndDrawMultiSeg open input directory failed: ", err)
 	}
+	defer dir.Close()
+	files, err := dir.Readdir(0)
+	if err != nil {
+		log.Fatal("readAndDrawMultiSeg reading directory failed: ", err)
+	}
+	numFiles := 0
+
+	//	segmentsPerFrame := make([]FileSeg, 0)
+
+	for _, fileinfo := range files {
+		inputFileName := path.Join(inputdir, fileinfo.Name())
+		outputFileName := fmt.Sprintf("%s.png", path.Join(outputdir, fileinfo.Name()))
+		log.Printf("Rendering %s -> %s\n", inputFileName, outputFileName)
+		readAndDrawSegmentFile(inputFileName, outputFileName)
+		numFiles++
+	}
+
+	log.Printf("Procssed %d files\n", numFiles)
+
+	// for i := idxStart; i < idxEnd; i++ {
+	// 	inputName := path.Join(inputdir, fmt.Sprintf("apple%d.png.seg", i))
+	// 	outputName := path.Join(outputdir, fmt.Sprintf("seq_cont_%d.png", i))
+	// 	log.Printf("Processing %s -> %s\n", inputName, outputName)
+	// 	readAndDrawSegmentFile(inputName, outputName)
+	// }
 }
 
 //
@@ -373,7 +532,7 @@ func readAndDrawMultiSeg(idxStart, idxEnd int, outputdir string) {
 //
 func readAndDrawSegmentFile(inputFile, outputFile string) {
 	lineSegments := ReadSEGFile(inputFile)
-	img := image.NewRGBA(image.Rect(0, 0, 960, 720))
+	img := image.NewRGBA(image.Rect(0, 0, glbConfig.Width, glbConfig.Height))
 	DrawLineSegments(lineSegments, img)
 	SaveImage(img, outputFile)
 }
@@ -389,7 +548,14 @@ func ReadSEGFile(filename string) []*LineSegment {
 	defer input.Close()
 
 	lineSegments := make([]*LineSegment, 0)
-	data := make([]byte, 4*2) // each line segment is 4 points of 16 bits
+	var data []byte
+
+	// Allocate depending on input data mode!
+	if glbConfig.DataMode == DataModeInt16 {
+		data = make([]byte, 4*2)
+	} else if glbConfig.DataMode == DataModeInt8 {
+		data = make([]byte, 4)
+	}
 	for {
 		_, err := input.Read(data)
 		if err != nil {
@@ -541,6 +707,15 @@ func (b *Block) NumFilledPixels() int {
 //
 // Scan creates the contour
 //
+func (b *Block) ReadGreyPixel(x, y int) color.Gray {
+	c := color.GrayModel.Convert(b.img.At(x, y)).(color.Gray)
+
+	// tmp := float64(c.Y) / 255.0
+	// tmp = tmp * tmp //math.Pow(tmp, 4)
+	// c.Y = uint8(255.0 * tmp)
+	return c
+}
+
 func (b *Block) Scan(pnts []image.Point) []image.Point {
 
 	filledPixels := b.NumFilledPixels()
@@ -561,9 +736,12 @@ func (b *Block) Scan(pnts []image.Point) []image.Point {
 				continue
 			}
 
-			c := color.GrayModel.Convert(b.img.At(b.X+x, b.Y+y)).(color.Gray)
-			l := color.GrayModel.Convert(b.img.At(b.X+x-1, b.Y+y)).(color.Gray)
-			u := color.GrayModel.Convert(b.img.At(b.X+x, b.Y+y-1)).(color.Gray)
+			c := b.ReadGreyPixel(b.X+x, b.Y+y)
+			l := b.ReadGreyPixel(b.X+x-1, b.Y+y)
+			u := b.ReadGreyPixel(b.X+x, b.Y+y-1)
+			//c := color.GrayModel.Convert(b.img.At(b.X+x, b.Y+y)).(color.Gray)
+			// l := color.GrayModel.Convert(b.img.At(b.X+x-1, b.Y+y)).(color.Gray)
+			// u := color.GrayModel.Convert(b.img.At(b.X+x, b.Y+y-1)).(color.Gray)
 
 			delta_x := math.Abs(float64(l.Y) - float64(c.Y))
 			delta_y := math.Abs(float64(u.Y) - float64(c.Y))
@@ -722,11 +900,29 @@ func NewLineSegment(a, b image.Point) LineSegment {
 }
 func NewLineSegmentFromBytes(data []byte) LineSegment {
 	buf := bytes.NewBuffer(data)
-	var x1, y1, x2, y2 int16
-	binary.Read(buf, binary.LittleEndian, &x1)
-	binary.Read(buf, binary.LittleEndian, &y1)
-	binary.Read(buf, binary.LittleEndian, &x2)
-	binary.Read(buf, binary.LittleEndian, &y2)
+
+	var x1, y1, x2, y2 uint16
+	if glbConfig.DataMode == DataModeInt16 {
+		binary.Read(buf, binary.LittleEndian, &x1)
+		binary.Read(buf, binary.LittleEndian, &y1)
+		binary.Read(buf, binary.LittleEndian, &x2)
+		binary.Read(buf, binary.LittleEndian, &y2)
+	} else if glbConfig.DataMode == DataModeInt8 {
+		var tx1, ty1, tx2, ty2 uint8
+		binary.Read(buf, binary.LittleEndian, &tx1)
+		binary.Read(buf, binary.LittleEndian, &ty1)
+		binary.Read(buf, binary.LittleEndian, &tx2)
+		binary.Read(buf, binary.LittleEndian, &ty2)
+
+		x1 = uint16(tx1)
+		y1 = uint16(ty1)
+		x2 = uint16(tx2)
+		y2 = uint16(ty2)
+
+	} else {
+		log.Fatal("Unsupported datamode: ", glbConfig.DataMode)
+	}
+	//log.Printf("(%d,%d) (%d,%d)\n", x1, y1, x2, y2)
 
 	ls := LineSegment{
 		ptStart:  image.Pt(int(x1), int(y1)),
@@ -750,10 +946,19 @@ func (ls LineSegment) AsVector() vector.Vec2D {
 
 func (ls *LineSegment) ToBytes() *bytes.Buffer {
 	out := new(bytes.Buffer)
-	binary.Write(out, binary.LittleEndian, int16(ls.PtStart().X))
-	binary.Write(out, binary.LittleEndian, int16(ls.PtStart().Y))
-	binary.Write(out, binary.LittleEndian, int16(ls.PtEnd().X))
-	binary.Write(out, binary.LittleEndian, int16(ls.PtEnd().Y))
+	if glbConfig.DataMode == DataModeInt16 {
+		binary.Write(out, binary.LittleEndian, uint16(ls.PtStart().X))
+		binary.Write(out, binary.LittleEndian, uint16(ls.PtStart().Y))
+		binary.Write(out, binary.LittleEndian, uint16(ls.PtEnd().X))
+		binary.Write(out, binary.LittleEndian, uint16(ls.PtEnd().Y))
+	} else if glbConfig.DataMode == DataModeInt8 {
+		binary.Write(out, binary.LittleEndian, uint8(ls.PtStart().X))
+		binary.Write(out, binary.LittleEndian, uint8(ls.PtStart().Y))
+		binary.Write(out, binary.LittleEndian, uint8(ls.PtEnd().X))
+		binary.Write(out, binary.LittleEndian, uint8(ls.PtEnd().Y))
+	} else {
+		log.Fatal("Usupported data mode: ", glbConfig.DataMode)
+	}
 	return out
 }
 
@@ -820,8 +1025,6 @@ func (cluster *ContourCluster) CalcPointDistance(pidx int) []PointDistance {
 // around the accumulation distance.
 //
 //
-// Note: lsPrev is unused (deprecated)
-//
 //
 func (cluster *ContourCluster) NextSegment(idxStart int) *LineSegment {
 
@@ -847,7 +1050,7 @@ func (cluster *ContourCluster) NextSegment(idxStart int) *LineSegment {
 	idxPrevious := -1
 	for i, pd := range pds {
 
-		// Detect a 'jump', this marks a cluster within the cluster - should be configurable
+		// Detect a 'jump', this marks a cluster within the cluster
 		if (idxPrevious == -1) && (pd.Distance > glbConfig.ClusterCutOffDistance) {
 			cluster.At(pd.PIndex).Use()
 			if glbConfig.Verbose {
@@ -948,7 +1151,8 @@ func isPointEqual(a, b image.Point) bool {
 	return false
 }
 
-// TODO: This needs more work, clusters should be considered!
+// TODO: This probably needs more work and tuning
+// Clusters are now considerd
 func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 	newlist := make([]*LineSegment, 0)
 
@@ -1021,6 +1225,32 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 	}
 
 	log.Printf("Optimize LS Before: %d, after: %d\n", len(lineSegments), len(newlist))
+	return newlist
+}
+
+func RescaleLineSegments(lineSegments []*LineSegment, w, h int) []*LineSegment {
+	newlist := make([]*LineSegment, 0)
+	// Eiher height or width or both have to be set in order for rescale to happen
+
+	xFactor := 1.0 / float64(w)
+	yFactor := 1.0 / float64(h)
+
+	for _, ls := range lineSegments {
+		ptStart := ls.PtStart()
+		xs := int(float64(glbConfig.Width) * xFactor * float64(ptStart.X))
+		ys := int(float64(glbConfig.Height) * yFactor * float64(ptStart.Y))
+
+		ptEnd := ls.PtEnd()
+		xe := int(float64(glbConfig.Width) * xFactor * float64(ptEnd.X))
+		ye := int(float64(glbConfig.Height) * yFactor * float64(ptEnd.Y))
+
+		newStart := image.Pt(xs, ys)
+		newEnd := image.Pt(xe, ye)
+
+		lsNew := NewLineSegment(newStart, newEnd)
+		newlist = append(newlist, &lsNew)
+	}
+
 	return newlist
 }
 
@@ -1126,16 +1356,19 @@ func DrawLineSegments(lineSegments []*LineSegment, dst *image.RGBA) {
 		ls := lineSegments[i]
 		//DrawLine(dst, ls.PtStart(), ls.PtEnd(), color.RGBA{0, 0, uint8(i & 255), 255})
 		DrawLine(dst, ls.PtStart(), ls.PtEnd(), col)
-		if i == 0 {
-			hl := image.Pt(ls.PtStart().X-4, ls.PtStart().Y)
-			hr := image.Pt(ls.PtStart().X+4, ls.PtStart().Y)
-			vu := image.Pt(ls.PtStart().X, ls.PtStart().Y-4)
-			vd := image.Pt(ls.PtStart().X, ls.PtStart().Y+4)
-			DrawLine(dst, hl, hr, ptcol2)
-			DrawLine(dst, vu, vd, ptcol2)
-			//PutPixel(dst, ls.PtStart(), ptcol2)
-		} else {
-			PutPixel(dst, ls.PtStart(), ptcol)
+		if glbConfig.Verbose {
+			if i == 0 {
+				hl := image.Pt(ls.PtStart().X-4, ls.PtStart().Y)
+				hr := image.Pt(ls.PtStart().X+4, ls.PtStart().Y)
+				vu := image.Pt(ls.PtStart().X, ls.PtStart().Y-4)
+				vd := image.Pt(ls.PtStart().X, ls.PtStart().Y+4)
+				DrawLine(dst, hl, hr, ptcol2)
+				DrawLine(dst, vu, vd, ptcol2)
+				//PutPixel(dst, ls.PtStart(), ptcol2)
+			} else {
+				PutPixel(dst, ls.PtStart(), ptcol)
+			}
+
 		}
 	}
 }
