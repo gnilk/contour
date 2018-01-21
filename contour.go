@@ -126,6 +126,7 @@ type Config struct {
 	Optimize                 bool
 	Rescale                  bool
 	DataMode                 DataMode
+	SaveEmptySegmentFile     bool
 }
 
 var glbConfig = Config{
@@ -150,6 +151,7 @@ var glbConfig = Config{
 	Optimize:                 false,
 	Rescale:                  false,
 	DataMode:                 DataModeInt16,
+	SaveEmptySegmentFile:     false,
 }
 
 type BlockMap map[int]*Block
@@ -239,6 +241,9 @@ func parseOptions() {
 					case 'l':
 						glbConfig.ListVectors = true
 						break
+					case 'e':
+						glbConfig.SaveEmptySegmentFile = true
+						break
 					case 'w':
 						i++
 						glbConfig.Width, _ = strconv.Atoi(os.Args[i])
@@ -292,6 +297,7 @@ func printHelpAndExit() {
 	fmt.Println("  o   Enable optimization")
 	fmt.Println("  r   Render image from segment file/directory and save as PNG file/directory")
 	fmt.Println("  v   Switch on extensive output (this also renders debug data in the image)")
+	fmt.Println("  e   Save empty segment files, default: false\n")
 	fmt.Println("  w   Generate: Rescale to width. Render: Use this width for destination bitmap")
 	fmt.Println("  h   Generate: Rescale to height. Render: Use this height for destination bitmap")
 	fmt.Println("  ?   This screen")
@@ -452,6 +458,17 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 
 		SaveLineSegments(lineSegments, segmentsFile)
 		numSegments = len(lineSegments)
+	} else {
+		// Empty frame!!
+		if glbConfig.SaveEmptySegmentFile {
+			outputFile, err := os.Create(segmentsFile)
+			if err != nil {
+				log.Fatal(err)
+			}
+			outputFile.Close()
+		} else {
+			log.Printf("File: %s contains no data!\n", inputFile)
+		}
 	}
 
 	if len(contourFile) > 0 {
@@ -602,7 +619,6 @@ func SaveLineSegments(lineSegments []*LineSegment, filename string) {
 	}
 
 	log.Printf("Saving %d lines segments\n", len(lineSegments))
-
 	totBytes := 0
 	for _, ls := range lineSegments {
 		buf := ls.ToBytes()
