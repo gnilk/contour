@@ -70,7 +70,6 @@ import (
 	"image/color"
 	"image/png"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"os"
@@ -127,6 +126,7 @@ type Config struct {
 	Rescale                  bool
 	DataMode                 DataMode
 	SaveEmptySegmentFile     bool
+	NumFrames                int
 }
 
 var glbConfig = Config{
@@ -152,6 +152,7 @@ var glbConfig = Config{
 	Rescale:                  false,
 	DataMode:                 DataModeInt16,
 	SaveEmptySegmentFile:     false,
+	NumFrames:                0,
 }
 
 type BlockMap map[int]*Block
@@ -210,6 +211,9 @@ func parseOptions() {
 			} else if arg == "-ccd" {
 				i++
 				glbConfig.ClusterCutOffDistance, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-frames" {
+				i++
+				glbConfig.NumFrames, _ = strconv.Atoi(os.Args[i])
 			} else if arg == "-datamode" {
 				i++
 				mode := os.Args[i]
@@ -344,17 +348,19 @@ func renderDataFromConfig() {
 		log.Fatal("Render needs width (-w) and height (-h) for destination image!")
 	}
 
-	isInputDir := isDir(glbConfig.Input)
-	if isInputDir {
-		if !isDir(glbConfig.Output) {
-			log.Fatal("If input is directory output must be directory!")
-		}
-		//log.Fatal("Not yet implemented!")
-		readAndDrawMultiSeg(1, 500, glbConfig.Input, glbConfig.Output)
-	} else {
-		log.Printf("Render Single File, %s -> %s\n", glbConfig.Input, glbConfig.Output)
-		readAndDrawSegmentFile(glbConfig.Input, glbConfig.Output)
-	}
+	readAndDrawStripDB(glbConfig.Input, glbConfig.Output)
+
+	// isInputDir := isDir(glbConfig.Input)
+	// if isInputDir {
+	// 	if !isDir(glbConfig.Output) {
+	// 		log.Fatal("If input is directory output must be directory!")
+	// 	}
+	// 	//log.Fatal("Not yet implemented!")
+	// 	readAndDrawMultiSeg(1, 500, glbConfig.Input, glbConfig.Output)
+	// } else {
+	// 	log.Printf("Render Single File, %s -> %s\n", glbConfig.Input, glbConfig.Output)
+	// 	readAndDrawSegmentFile(glbConfig.Input, glbConfig.Output)
+	// }
 }
 
 type FileSeg struct {
@@ -380,12 +386,21 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 
 	segmentsPerFrame := make([]FileSeg, 0)
 
-	for _, fileinfo := range files {
+	allSegments := make([][]*LineSegment, len(files)+1)
+
+	for i, fileinfo := range files {
 		inputFileName := path.Join(inputDirectory, fileinfo.Name())
 		outputFileName := fmt.Sprintf("%s.seg", path.Join(outputDirectory, fileinfo.Name()))
 		log.Printf("----------------------------------------------\n")
-		log.Printf("Processing file: %s\n", inputFileName)
-		numSeg := singleFileTest(inputFileName, outputFileName, "")
+		log.Printf("%d of %d, processing: %s\n", numFiles, len(files), inputFileName)
+		numSeg, lineSegments := singleFileTest(inputFileName, outputFileName, "")
+
+		// Store in one big fat array
+		var index int
+		fmt.Sscanf(fileinfo.Name(), "apple%d.png", &index)
+		log.Printf("FileIndex: %d\n", index)
+		allSegments[index] = lineSegments
+		//
 
 		fs := FileSeg{
 			Filename: outputFileName,
@@ -395,22 +410,65 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 		segmentsPerFrame = append(segmentsPerFrame, fs)
 		numFiles = numFiles + 1
 
+		if glbConfig.NumFrames > 0 && (i+1) >= glbConfig.NumFrames {
+			break
+		}
+
 	}
 	log.Printf("---------------------------------\n")
 	log.Printf("Processing completed, %d files\n", numFiles)
 
-	strSegments := ""
-	for _, s := range segmentsPerFrame {
-		strSegments += fmt.Sprintf("%s,%d\n", s.Filename, s.Segments)
+	log.Printf("Dumping to one big datafile")
+	stripsfile, err := os.Create("strips.db")
+	if err != nil {
+		log.Fatal("Created segment database failed: ", err)
 	}
-	byteCode := []byte(strSegments)
-	ioutil.WriteFile("segments.txt", byteCode, 0644)
+	defer stripsfile.Close()
+	// Testing to write as separate arrays
+
+	for _, segarray := range allSegments {
+		strips := LineSegmentsToStrips(segarray)
+		// Write number of strips
+		if len(strips) > 255 {
+			log.Fatal("Failed: Too many strips in segment!")
+		}
+
+		// Format:
+		// A bunch of lines connected together is called a strip. They are continious
+		// from one point to the other
+		//
+		// A bunch of strips builds a frame
+		//
+		// Parse strips unilt EOF is hit
+		//
+		// Format details:
+		//
+		//  Number of Strips	int8
+		//  [strip]
+		//		Number of points	int8
+		//		[points]
+		//			X				int8
+		//          Y               int8
+		//
+		//  - REPEAT UNTIL EOF
+		//
+
+		binary.Write(stripsfile, binary.LittleEndian, uint8(len(strips)))
+		WriteStrips(stripsfile, strips)
+	}
+
+	// strSegments := ""
+	// for _, s := range segmentsPerFrame {
+	// 	strSegments += fmt.Sprintf("%s,%d\n", s.Filename, s.Segments)
+	// }
+	// byteCode := []byte(strSegments)
+	// ioutil.WriteFile("segments.txt", byteCode, 0644)
 }
 
 //
 // singleFileTest converts a single image to a segment file and a rendering of the segments
 //
-func singleFileTest(inputFile, segmentsFile, contourFile string) int {
+func singleFileTest(inputFile, segmentsFile, contourFile string) (int, []*LineSegment) {
 	img := ReadPNGImage(inputFile)
 	log.Printf("Size: %d x %d\n", img.Bounds().Dx(), img.Bounds().Dy())
 
@@ -458,6 +516,8 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 
 		SaveLineSegments(lineSegments, segmentsFile)
 		numSegments = len(lineSegments)
+
+		SaveSegmentsAsStrips("strips_single.db", lineSegments)
 	} else {
 		// Empty frame!!
 		if glbConfig.SaveEmptySegmentFile {
@@ -478,7 +538,23 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) int {
 		DrawLineSegments(lineSegments, contImg)
 		SaveImage(contImg, contourFile)
 	}
-	return numSegments
+	return numSegments, lineSegments
+}
+
+func SaveSegmentsAsStrips(file string, lineSegments []*LineSegment) {
+	stripsfile, err := os.Create(file)
+	if err != nil {
+		log.Fatal("Created segment database failed: ", err)
+	}
+	defer stripsfile.Close()
+	log.Printf("Converting %d segments to strips\n", len(lineSegments))
+	strips := LineSegmentsToStrips(lineSegments)
+	// Write number of strips
+	if len(strips) > 255 {
+		log.Fatal("Failed: Too many strips in segment!")
+	}
+	binary.Write(stripsfile, binary.LittleEndian, uint8(len(strips)))
+	WriteStrips(stripsfile, strips)
 }
 
 func rescale(v uint8) uint8 {
@@ -529,7 +605,7 @@ func readAndDrawMultiSeg(idxStart, idxEnd int, inputdir, outputdir string) {
 	for _, fileinfo := range files {
 		inputFileName := path.Join(inputdir, fileinfo.Name())
 		outputFileName := fmt.Sprintf("%s.png", path.Join(outputdir, fileinfo.Name()))
-		log.Printf("Rendering %s -> %s\n", inputFileName, outputFileName)
+		log.Printf("%d of %d, rendering: %s -> %s\n", numFiles, len(files), inputFileName, outputFileName)
 		readAndDrawSegmentFile(inputFileName, outputFileName)
 		numFiles++
 	}
@@ -542,6 +618,65 @@ func readAndDrawMultiSeg(idxStart, idxEnd int, inputdir, outputdir string) {
 	// 	log.Printf("Processing %s -> %s\n", inputName, outputName)
 	// 	readAndDrawSegmentFile(inputName, outputName)
 	// }
+}
+
+func readAndDrawStripDB(inputFile, outputDir string) {
+	stripFile, err := os.Open(inputFile)
+	if err != nil {
+		log.Fatal("readAndDrawStripDB, open strip file failure: ", err)
+	}
+
+	defer stripFile.Close()
+
+	frameCounter := 0
+
+	var stripsForFrame uint8
+	//stripFile.Read()
+	for {
+		err = binary.Read(stripFile, binary.LittleEndian, &stripsForFrame)
+		if err == io.EOF {
+			log.Printf("EOF Reached, processed: %d frames\n", frameCounter)
+			break
+		}
+		frame := readStripsForFrame(stripFile, stripsForFrame)
+		frameFileName := path.Join(outputDir, fmt.Sprintf("image_%d.png", frameCounter))
+		log.Printf("Frame: %d, strips: %d, Image: %s\n", frameCounter, stripsForFrame, frameFileName)
+		renderStripsToFile(frameFileName, frame)
+		frameCounter++
+	}
+}
+
+func readStripsForFrame(reader io.Reader, nStrips uint8) []Strip {
+	strips := make([]Strip, 0)
+	for i := uint8(0); i < nStrips; i++ {
+		var pointsInStrip uint8
+		err := binary.Read(reader, binary.LittleEndian, &pointsInStrip)
+		if err != nil {
+			log.Fatal("readStripForFrame, number of points in strip failed: ", err)
+		}
+		log.Printf("  Points in strip: %d\n", pointsInStrip)
+		strip := readStrip(reader, pointsInStrip)
+		strips = append(strips, strip)
+	}
+	return strips
+}
+func readStrip(reader io.Reader, nPoints uint8) Strip {
+	strip := make(Strip, 0)
+	for i := uint8(0); i < nPoints; i++ {
+		var x, y uint8
+		binary.Read(reader, binary.LittleEndian, &x)
+		binary.Read(reader, binary.LittleEndian, &y)
+		pt := image.Pt(int(x), int(y))
+		strip = append(strip, pt)
+	}
+	return strip
+}
+
+func renderStripsToFile(fileName string, strips []Strip) {
+	img := image.NewRGBA(image.Rect(0, 0, glbConfig.Width, glbConfig.Height))
+	lineSegments := LineSegmentsFromStrips(strips)
+	DrawLineSegments(lineSegments, img)
+	SaveImage(img, fileName)
 }
 
 //
@@ -619,18 +754,37 @@ func SaveLineSegments(lineSegments []*LineSegment, filename string) {
 	}
 
 	log.Printf("Saving %d lines segments\n", len(lineSegments))
+
+	totBytes := WriteLineSegments(outputFile, lineSegments)
+	log.Printf("Wrote %d bytes to %s\n", totBytes, filename)
+}
+
+func WriteLineSegments(writer io.Writer, lineSegments []*LineSegment) int {
 	totBytes := 0
 	for _, ls := range lineSegments {
 		buf := ls.ToBytes()
-		n, err := outputFile.Write(buf.Bytes())
+		n, err := writer.Write(buf.Bytes())
 		if err != nil {
 			log.Fatal("Unable to save linesegment to file")
 		}
 		totBytes = totBytes + n
 	}
+	return totBytes
+}
 
-	log.Printf("Wrote %d bytes to %s\n", totBytes, filename)
-
+func WriteLineSegmentsByteChannel(writer io.Writer, ch int, lineSegments []*LineSegment) int {
+	totBytes := 0
+	channelData := make([]byte, 1)
+	for _, ls := range lineSegments {
+		buf := ls.ToBytes()
+		channelData[0] = buf.Bytes()[ch]
+		n, err := writer.Write(channelData)
+		if err != nil {
+			log.Fatal("Unable to save linesegment to file")
+		}
+		totBytes = totBytes + n
+	}
+	return totBytes
 }
 
 //
@@ -960,6 +1114,20 @@ func (ls LineSegment) AsVector() vector.Vec2D {
 	return vector.NewVec2DFromPoints(ls.ptStart, ls.ptEnd)
 }
 
+func PointToBytes(pt image.Point) *bytes.Buffer {
+	out := new(bytes.Buffer)
+	if glbConfig.DataMode == DataModeInt16 {
+		binary.Write(out, binary.LittleEndian, uint16(pt.X))
+		binary.Write(out, binary.LittleEndian, uint16(pt.Y))
+	} else if glbConfig.DataMode == DataModeInt8 {
+		binary.Write(out, binary.LittleEndian, uint8(pt.X))
+		binary.Write(out, binary.LittleEndian, uint8(pt.Y))
+	} else {
+		log.Fatal("Usupported data mode: ", glbConfig.DataMode)
+	}
+	return out
+}
+
 func (ls *LineSegment) ToBytes() *bytes.Buffer {
 	out := new(bytes.Buffer)
 	if glbConfig.DataMode == DataModeInt16 {
@@ -1135,7 +1303,7 @@ func ExtractVectors(points []image.Point) []*LineSegment {
 	dbgPoints := 0
 
 	idxStart := 0
-	log.Printf("Extract Vectors, idxStart: %d\n", idxStart)
+	//	log.Printf("Extract Vectors, idxStart: %d\n", idxStart)
 
 	// Loop over all points and create segments
 	for i := 0; i < cluster.Len(); i++ {
@@ -1240,8 +1408,112 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 		}
 	}
 
-	log.Printf("Optimize LS Before: %d, after: %d\n", len(lineSegments), len(newlist))
+	log.Printf("Optimize, segments before: %d, after: %d\n", len(lineSegments), len(newlist))
 	return newlist
+}
+
+type Strip []image.Point
+
+func LineSegmentsFromStrips(strips []Strip) []*LineSegment {
+	lineSegments := make([]*LineSegment, 0)
+	for _, strip := range strips {
+		for i := 0; i < len(strip)-1; i++ {
+			ls := NewLineSegment(strip[i], strip[i+1])
+			lineSegments = append(lineSegments, &ls)
+		}
+	}
+	return lineSegments
+}
+func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
+	strips := make([]Strip, 0)
+	strip := make(Strip, 0)
+
+	if len(lineSegments) == 0 {
+		return strips
+	}
+
+	var lsPrev *LineSegment
+
+	for i := 0; i < len(lineSegments)-1; i++ {
+		ls := lineSegments[i]
+		strip = append(strip, ls.ptStart)
+
+		lsNext := lineSegments[i+1]
+		if isPointEqual(ls.PtEnd(), lsNext.PtStart()) {
+			// If we are exceeding max 8bit length create new strip and continue
+			// Note: This will break polygons!!!!
+			if len(strip) > (255 - 2) {
+				log.Printf("Strip exceeding 255 items, splitting\n")
+				strip = append(strip, ls.PtEnd())
+				strips = append(strips, strip)
+				strip = make(Strip, 0)
+			}
+		} else {
+			// Append ending point and push forward
+			strip = append(strip, ls.PtEnd())
+			// New strip
+			log.Printf("Point in strip: %d\n", len(strip))
+			strips = append(strips, strip)
+			strip = make(Strip, 0)
+		}
+		lsPrev = ls
+	}
+	if len(lineSegments) > 1 {
+		ls := lineSegments[len(lineSegments)-1]
+		if isPointEqual(lsPrev.PtEnd(), ls.PtStart()) {
+			log.Printf("Last LS append to current")
+			strip = append(strip, ls.PtEnd())
+		} else {
+			log.Printf("Last LS require new strip!!!")
+			if len(strip) > 0 {
+				log.Printf("  Adding stray point to last strip")
+				strip = append(strip, lsPrev.PtEnd())
+				log.Printf("Point in strip: %d\n", len(strip))
+				strips = append(strips, strip)
+			}
+			// New strip
+			strip = make(Strip, 0)
+			strip = append(strip, ls.PtStart())
+			strip = append(strip, ls.PtEnd())
+			log.Printf("Point in strip: %d\n", len(strip))
+		}
+		// Append last strip to all
+		strips = append(strips, strip)
+	} else {
+		log.Printf("Only one segment, creating special strip!\n")
+		ls := lineSegments[0]
+		strip = append(strip, ls.PtStart())
+		strip = append(strip, ls.PtEnd())
+		// Append last strip to all
+		strips = append(strips, strip)
+	}
+
+	totalPoints := 0
+	for i, s := range strips {
+		if len(s) < 2 {
+			log.Fatal("Strip %d for image contains invalid number of points: %d\n", i, len(s))
+		}
+		totalPoints = totalPoints + len(s)
+	}
+	log.Printf("Total points in frame: %d\n", totalPoints)
+
+	// TODO: Solve last segment!!!
+	return strips
+
+}
+
+func WriteStrips(file io.Writer, strips []Strip) {
+	for _, strip := range strips {
+		nPoints := len(strip)
+		if nPoints > 255 {
+			log.Fatal("WriterStrips Failed: More (%d) than 255 points in one strip!!!!!", len(strip))
+		}
+		binary.Write(file, binary.LittleEndian, uint8(nPoints))
+		for _, pt := range strip {
+			out := PointToBytes(pt)
+			file.Write(out.Bytes())
+		}
+	}
 }
 
 func RescaleLineSegments(lineSegments []*LineSegment, w, h int) []*LineSegment {
