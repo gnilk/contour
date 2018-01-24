@@ -137,9 +137,9 @@ var glbConfig = Config{
 	LongLineDistance:        3.0,  // Distance to search before capturing the directional vector for the segment
 	BlockSize:               64,   // Not used
 	FilledBlockLevel:        0.5,  // Not used
-	OptimizationCutOffAngle: 0.97,
+	OptimizationCutOffAngle: 0.95,
 	ContrastFactor:          2,
-	Width:                   0,
+	Width:                   255,
 	Height:                  0,
 	// Options
 	Verbose: false, // Switch on heavy debug output
@@ -148,9 +148,9 @@ var glbConfig = Config{
 	Output:  "",
 	GenerateIntermediateData: false,
 	ListVectors:              false,
-	Optimize:                 false,
-	Rescale:                  false,
-	DataMode:                 DataModeInt16,
+	Optimize:                 true,
+	Rescale:                  true,
+	DataMode:                 DataModeInt8,
 	SaveEmptySegmentFile:     false,
 	NumFrames:                0,
 }
@@ -297,13 +297,12 @@ func printHelpAndExit() {
 	fmt.Println("Input and Output can either be files or directories but not cominbed")
 	fmt.Println("PNG is only format supported for input images")
 	fmt.Println("Options")
-	fmt.Println("  g   Generate line segments from PNG save to Segment file/directory (default)")
-	fmt.Println("  o   Enable optimization")
-	fmt.Println("  r   Render image from segment file/directory and save as PNG file/directory")
+	fmt.Println("  g   Generate line strips from PNG (file/dir) and save to strip file (default)")
+	fmt.Println("  r   Render image from strip file and save as PNG file/directory")
 	fmt.Println("  v   Switch on extensive output (this also renders debug data in the image)")
 	fmt.Println("  e   Save empty segment files, default: false\n")
-	fmt.Println("  w   Generate: Rescale to width. Render: Use this width for destination bitmap")
-	fmt.Println("  h   Generate: Rescale to height. Render: Use this height for destination bitmap")
+	fmt.Printf("   w   Generate: Rescale to width. Render: Use this width for destination bitmap, default: %d\n", glbConfig.Width)
+	fmt.Println("  h   Generate: Rescale to height, keep zero to respect aspect ration from with, default: %d\n", glbConfig.Height)
 	fmt.Println("  ?   This screen")
 	fmt.Println("Options for generating")
 	fmt.Printf("  gl   <int>    Grey threshold level for contour lines when scanning bitmap, default: %d\n", glbConfig.GreyThresholdLevel)
@@ -314,17 +313,16 @@ func printHelpAndExit() {
 	fmt.Printf("  ccd <float>   Cluster Cutoff Distance, break condition for a new polygon, default: %f\n", glbConfig.ClusterCutOffDistance)
 	fmt.Printf("  oca <float>   Optimization Cutoff Angle, break condition for line segment concatination, default: %f\n", glbConfig.OptimizationCutOffAngle)
 	fmt.Printf("Other options:")
+	fmt.Printf("  frames <int>   Cut off generation after X number of frames\n")
 	fmt.Printf("  datamode <int8/int16>  Specify bitsize in segment file (read/write), default is int16\n")
 	os.Exit(1)
 }
 
+// Runs the contour algorithm and saves to a strip file
 func generateDataFromConfig() {
 
 	isInputDir := isDir(glbConfig.Input)
 	if isInputDir {
-		if !isDir(glbConfig.Output) {
-			log.Fatal("If input is directory output must be directory!")
-		}
 		log.Printf("Multi Processing Mode: %s -> %s\n", glbConfig.Input, glbConfig.Output)
 		if glbConfig.GenerateIntermediateData {
 			log.Println("WARN: Intermediate files not available in multi processing mode")
@@ -390,10 +388,9 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 
 	for i, fileinfo := range files {
 		inputFileName := path.Join(inputDirectory, fileinfo.Name())
-		outputFileName := fmt.Sprintf("%s.seg", path.Join(outputDirectory, fileinfo.Name()))
 		log.Printf("----------------------------------------------\n")
 		log.Printf("%d of %d, processing: %s\n", numFiles, len(files), inputFileName)
-		numSeg, lineSegments := singleFileTest(inputFileName, outputFileName, "")
+		numSeg, lineSegments := singleFileTest(inputFileName, "", "")
 
 		// Store in one big fat array
 		var index int
@@ -403,7 +400,7 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 		//
 
 		fs := FileSeg{
-			Filename: outputFileName,
+			Filename: "", //outputFileName,		// deprecated!
 			Segments: numSeg,
 		}
 
@@ -419,12 +416,11 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 	log.Printf("Processing completed, %d files\n", numFiles)
 
 	log.Printf("Dumping to one big datafile")
-	stripsfile, err := os.Create("strips.db")
+	stripsfile, err := os.Create(glbConfig.Output)
 	if err != nil {
 		log.Fatal("Created segment database failed: ", err)
 	}
 	defer stripsfile.Close()
-	// Testing to write as separate arrays
 
 	for _, segarray := range allSegments {
 		strips := LineSegmentsToStrips(segarray)
@@ -456,13 +452,6 @@ func multiFileTest(inputDirectory, outputDirectory string) {
 		binary.Write(stripsfile, binary.LittleEndian, uint8(len(strips)))
 		WriteStrips(stripsfile, strips)
 	}
-
-	// strSegments := ""
-	// for _, s := range segmentsPerFrame {
-	// 	strSegments += fmt.Sprintf("%s,%d\n", s.Filename, s.Segments)
-	// }
-	// byteCode := []byte(strSegments)
-	// ioutil.WriteFile("segments.txt", byteCode, 0644)
 }
 
 //
@@ -508,27 +497,18 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) (int, []*LineSe
 		}
 		if glbConfig.Optimize {
 			lineSegments = OptimizeLineSegments(lineSegments)
+			//lineSegments = OptimizeLineSegments(lineSegments)
 		}
 		if glbConfig.Rescale {
 			// Pass in original width/height
 			lineSegments = RescaleLineSegments(lineSegments, width, height)
 		}
-
-		SaveLineSegments(lineSegments, segmentsFile)
-		numSegments = len(lineSegments)
-
-		SaveSegmentsAsStrips("strips_single.db", lineSegments)
+		if segmentsFile != "" {
+			SaveSegmentsAsStrips(glbConfig.Output, lineSegments)
+		}
 	} else {
 		// Empty frame!!
-		if glbConfig.SaveEmptySegmentFile {
-			outputFile, err := os.Create(segmentsFile)
-			if err != nil {
-				log.Fatal(err)
-			}
-			outputFile.Close()
-		} else {
-			log.Printf("File: %s contains no data!\n", inputFile)
-		}
+		log.Printf("File: %s contains no data!\n", inputFile)
 	}
 
 	if len(contourFile) > 0 {
@@ -553,6 +533,8 @@ func SaveSegmentsAsStrips(file string, lineSegments []*LineSegment) {
 	if len(strips) > 255 {
 		log.Fatal("Failed: Too many strips in segment!")
 	}
+	log.Printf("Writing strips to: %s\n", file)
+
 	binary.Write(stripsfile, binary.LittleEndian, uint8(len(strips)))
 	WriteStrips(stripsfile, strips)
 }
@@ -1113,6 +1095,9 @@ func (ls LineSegment) IdxEnd() int          { return ls.idxEnd }
 func (ls LineSegment) AsVector() vector.Vec2D {
 	return vector.NewVec2DFromPoints(ls.ptStart, ls.ptEnd)
 }
+func (ls LineSegment) Length() float64 {
+	return VecLen(ls.PtEnd(), ls.PtStart())
+}
 
 func PointToBytes(pt image.Point) *bytes.Buffer {
 	out := new(bytes.Buffer)
@@ -1346,10 +1331,6 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 		lsStart := lineSegments[i-1]
 		lsEnd := lineSegments[i]
 
-		if glbConfig.Verbose {
-			log.Printf("%d (%d,%d):(%d,%d)\n", i, lsStart.PtStart().X, lsStart.PtStart().Y, lsStart.PtEnd().X, lsStart.PtEnd().Y)
-		}
-
 		// Not sure this will work
 		if isPointEqual(lsStart.PtEnd(), lsEnd.PtStart()) {
 			vStart := lsStart.AsVector()
@@ -1357,6 +1338,13 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 			vStart.Norm()
 			vEnd.Norm()
 			dev := vStart.Dot(&vEnd)
+
+			if glbConfig.Verbose {
+				log.Printf("%d, (%d,%d):(%d,%d) -> (%d,%d):(%d:%d) - dev: %f\n", i,
+					lsStart.PtStart().X, lsStart.PtStart().Y, lsStart.PtEnd().X, lsStart.PtEnd().Y,
+					lsEnd.PtStart().X, lsEnd.PtStart().Y, lsEnd.PtEnd().X, lsEnd.PtEnd().Y,
+					dev)
+			}
 
 			// line segments aligned?
 			if dev > glbConfig.OptimizationCutOffAngle {
@@ -1372,7 +1360,8 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 					}
 					lsEnd = lineSegments[i]
 					if glbConfig.Verbose {
-						log.Printf("   %d, (%d,%d):(%d,%d) - dev: %f\n", i, lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y, dev)
+						log.Printf("   %d, (%d,%d):(%d,%d) - dev: %f\n", i,
+							lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y, dev)
 						//log.Printf("   	    (%d,%d):(%d,%d)\n", lsPrev.PtEnd().X, lsPrev.PtEnd().Y, lsEnd.PtStart().X, lsEnd.PtStart().Y)
 					}
 
@@ -1385,30 +1374,39 @@ func OptimizeLineSegments(lineSegments []*LineSegment) []*LineSegment {
 					}
 
 					lsPrev = lsEnd // Save this, GO has no while loop so this is a bit ugly
-
 					vEnd := lsEnd.AsVector()
 					vEnd.Norm()
 					dev = vStart.Dot(&vEnd)
 				}
-				if glbConfig.Verbose {
-					log.Printf("  <- Opt, dev: %f\n", dev)
-				}
 				// New segment is always between lsStart.Start and lsPrev.End
 				lsNew := NewLineSegment(lsStart.PtStart(), lsPrev.PtEnd())
+				if lsNew.Length() < 2 {
+					log.Printf("   OPT: WARNING SHORT LS DETECTED!!!!!\n")
+				}
+
 				if glbConfig.Verbose {
-					log.Printf("%d (%d,%d):(%d,%d)\n", i, lsNew.PtStart().X, lsNew.PtStart().Y, lsNew.PtEnd().X, lsNew.PtEnd().Y)
+					log.Printf("  <- Opt, dev: %f, length: %f\n", dev, lsNew.Length())
+				}
+
+				if glbConfig.Verbose {
+					log.Printf("N:%d (%d,%d):(%d,%d), length: %f\n", i, lsNew.PtStart().X, lsNew.PtStart().Y, lsNew.PtEnd().X, lsNew.PtEnd().Y, lsNew.Length())
 				}
 
 				newlist = append(newlist, &lsNew)
 			} else {
-				// Can't optimize this segment, just push it to the new list
-				newlist = append(newlist, lsStart)
+				if lsStart.Length() < 2 {
+					log.Printf("NO-OPT, Short linesegment: %f, skipping\n", lsStart.Length())
+				} else {
+					// Can't optimize this segment, just push it to the new list
+					newlist = append(newlist, lsStart)
+				}
+
 			}
 
 		}
 	}
 
-	log.Printf("Optimize, segments before: %d, after: %d\n", len(lineSegments), len(newlist))
+	log.Printf("Optimize (oca: %f), segments before: %d, after: %d\n", glbConfig.OptimizationCutOffAngle, len(lineSegments), len(newlist))
 	return newlist
 }
 
@@ -1436,14 +1434,28 @@ func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
 
 	for i := 0; i < len(lineSegments)-1; i++ {
 		ls := lineSegments[i]
-		strip = append(strip, ls.ptStart)
+		if len(strip) > 1 {
+			dist := VecLen(strip[len(strip)-1], ls.PtStart())
+			if dist < 2 {
+				if glbConfig.Verbose {
+					log.Printf("  Warning: Short line segment detected, skipping")
+				}
+			} else {
+				strip = append(strip, ls.ptStart)
+			}
+		} else {
+			strip = append(strip, ls.ptStart)
+		}
 
 		lsNext := lineSegments[i+1]
+
 		if isPointEqual(ls.PtEnd(), lsNext.PtStart()) {
 			// If we are exceeding max 8bit length create new strip and continue
 			// Note: This will break polygons!!!!
 			if len(strip) > (255 - 2) {
-				log.Printf("Strip exceeding 255 items, splitting\n")
+				if glbConfig.Verbose {
+					log.Printf("Strip exceeding 255 items, splitting\n")
+				}
 				strip = append(strip, ls.PtEnd())
 				strips = append(strips, strip)
 				strip = make(Strip, 0)
@@ -1452,7 +1464,9 @@ func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
 			// Append ending point and push forward
 			strip = append(strip, ls.PtEnd())
 			// New strip
-			log.Printf("Point in strip: %d\n", len(strip))
+			if glbConfig.Verbose {
+				log.Printf("Store strip with %d points\n", len(strip))
+			}
 			strips = append(strips, strip)
 			strip = make(Strip, 0)
 		}
@@ -1461,26 +1475,36 @@ func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
 	if len(lineSegments) > 1 {
 		ls := lineSegments[len(lineSegments)-1]
 		if isPointEqual(lsPrev.PtEnd(), ls.PtStart()) {
-			log.Printf("Last LS append to current")
+			if glbConfig.Verbose {
+				log.Printf("Last LS append to current")
+			}
 			strip = append(strip, ls.PtEnd())
 		} else {
-			log.Printf("Last LS require new strip!!!")
-			if len(strip) > 0 {
-				log.Printf("  Adding stray point to last strip")
-				strip = append(strip, lsPrev.PtEnd())
-				log.Printf("Point in strip: %d\n", len(strip))
-				strips = append(strips, strip)
+			if glbConfig.Verbose {
+				log.Printf("Last LS require new strip!!!")
 			}
-			// New strip
-			strip = make(Strip, 0)
+			if len(strip) > 0 {
+				strip = append(strip, lsPrev.PtEnd())
+				strips = append(strips, strip)
+				if glbConfig.Verbose {
+					log.Printf("  Adding stray point to last strip")
+					log.Printf("Point in strip: %d\n", len(strip))
+				}
+				// New strip
+				strip = make(Strip, 0)
+			}
 			strip = append(strip, ls.PtStart())
 			strip = append(strip, ls.PtEnd())
-			log.Printf("Point in strip: %d\n", len(strip))
+			if glbConfig.Verbose {
+				log.Printf("Point in strip: %d\n", len(strip))
+			}
 		}
 		// Append last strip to all
 		strips = append(strips, strip)
 	} else {
-		log.Printf("Only one segment, creating special strip!\n")
+		if glbConfig.Verbose {
+			log.Printf("Only one segment, creating special strip!\n")
+		}
 		ls := lineSegments[0]
 		strip = append(strip, ls.PtStart())
 		strip = append(strip, ls.PtEnd())
@@ -1491,7 +1515,9 @@ func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
 	totalPoints := 0
 	for i, s := range strips {
 		if len(s) < 2 {
-			log.Fatal("Strip %d for image contains invalid number of points: %d\n", i, len(s))
+			if glbConfig.Verbose {
+				log.Fatal("Strip %d for image contains invalid number of points: %d\n", i, len(s))
+			}
 		}
 		totalPoints = totalPoints + len(s)
 	}
@@ -1503,8 +1529,10 @@ func LineSegmentsToStrips(lineSegments []*LineSegment) []Strip {
 }
 
 func WriteStrips(file io.Writer, strips []Strip) {
-	for _, strip := range strips {
+	log.Printf("Strips: %d\n", len(strips))
+	for i, strip := range strips {
 		nPoints := len(strip)
+		log.Printf("  %d, Points: %d\n", i, nPoints)
 		if nPoints > 255 {
 			log.Fatal("WriterStrips Failed: More (%d) than 255 points in one strip!!!!!", len(strip))
 		}

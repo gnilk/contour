@@ -10,24 +10,33 @@
 //
 #include <stdio.h>
 #include <stdlib.h>
-#include <GLFW/glfw3.h>
-#include <stdio.h>
 #include <vector>
-
 #include <math.h>
 
-//#include <OpenGL/gl.h>
+#include <imgui.h>
+#include "imgui_impl_glfw_gl2.h"
+#include <GLFW/glfw3.h>
+
 #include <OpenGl/glu.h>
 
+
+
 #include "bass.h"
+#include "animation.h"
+#include "RenderWindow.h"
 
+using namespace gnilk;
 
+static Animation animation;
+static AnimationRenderVars animRenderVars = {
+	.numStrips = 255,
+	.idxFrame = 0,
+	.highLightFirstInStrip = true,
+	.highLightLineInStrip = true,
+	.idxStrip = 0,
+	.idxLineInStrip = 0,
+};
 
-// Window related parameters
-static GLFWwindow *window = NULL;
-static int preferred_monitor = 0;
-static int px_width = 0;
-static int px_height = 0;
 
 // Time releated variables
 static float tLast;
@@ -39,20 +48,11 @@ static bool quitPlayer = false;
 static float fov = 65.0;
 
 void Initialize();
-void OpenWindow(int width, int height, const char *title, bool fullScreen);
-void CloseWindow();
-bool ShouldWindowClose();
-void SetWindowPos(int xp, int yp);
-void MakeWindowCurrent();
-void UpdateWindow();
 void SetupRenderContext();
-void SetWindowTitle(const char *title);
 void Render(float tRender);
 void RenderFx(float tRender);
 void DrawAxis();
 
-
-static void glfwOnKey(GLFWwindow *window, int key, int scancode, int action, int mods);
 
 void perror(const char *err) {
 	printf("FATAL: %s\n", err);
@@ -67,6 +67,186 @@ public:
 	void Initialize();
 	void StartPlaying();
 };
+
+class UIWindow {
+private:
+	GLFWwindow* window;
+public:
+	void Open();
+	void Render();
+	void Close();
+	void SetPos(int x, int y);
+
+};
+
+void UIWindow::Open() {
+    window = glfwCreateWindow(1280, 720, "ImGui OpenGL3 example", NULL, NULL);
+    glfwMakeContextCurrent(window);    
+    glfwSwapInterval(1); // Enable vsync
+
+    // Setup ImGui binding
+    ImGui_ImplGlfwGL2_Init(window, true);
+
+    // Setup style
+    ImGui::StyleColorsClassic();
+}
+
+    bool show_demo_window = true;
+    bool show_another_window = false;
+    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
+void UIWindow::Render() {
+    glfwMakeContextCurrent(window);    
+    ImGui_ImplGlfwGL2_NewFrame();
+
+    // 1. Show a simple window.
+    // Tip: if we don't call ImGui::Begin()/ImGui::End() the widgets automatically appears in a window called "Debug".
+    {
+        static float f = 0.0f;
+        static int nStrips = 0;
+        ImGui::Text("Hello, world!");                           // Some text (you can use a format string too)
+        // Do frame control
+        ImGui::Text("Frame");
+        ImGui::SameLine();
+        ImGui::SliderInt("##Frame", &animRenderVars.idxFrame, 0, animation.Frames()-1);
+        ImGui::SameLine();
+        if (ImGui::Button("Prev##Frame")) {
+        	if (animRenderVars.idxFrame > 0) {
+        		animRenderVars.idxFrame -= 1;
+        		animRenderVars.idxLineInStrip = 0;
+        	}
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Next##Frame")) {
+        	if (animRenderVars.idxFrame <= animation.Frames()) {
+        		animRenderVars.idxFrame += 1;
+        		animRenderVars.idxLineInStrip = 0;
+        	}
+        }
+        //printf("NStrips\n");
+        int numStrips = animation.At(animRenderVars.idxFrame)->Strips();
+        if (numStrips > 0) {
+        	//printf("bla\n");
+	        // Strip control
+	        ImGui::Text("Strips in Frame: %d", animation.At(animRenderVars.idxFrame)->Strips());
+	        ImGui::Text("Strips");
+			ImGui::SameLine();
+	        ImGui::SliderInt("##Strip", &animRenderVars.numStrips, 0, animation.At(animRenderVars.idxFrame)->Strips()-1);
+			ImGui::SameLine();
+	        if (ImGui::Button("Prev##Strip")) {
+	        	printf("StripPrev\n");
+	        	if (animRenderVars.numStrips > 0) {
+	        		animRenderVars.numStrips -= 1;
+	        	}
+	        }
+	        ImGui::SameLine();
+	        if (ImGui::Button("Next##Strip")) {
+	        	if (animRenderVars.numStrips <= animation.At(animRenderVars.idxFrame)->Strips()) {
+	        		animRenderVars.numStrips += 1;
+	        	}
+	        }
+
+	        // Line Control
+	        ImGui::Text("Strip");
+			ImGui::SameLine();
+	        ImGui::SliderInt("##StripFocus", &animRenderVars.idxStrip, 0, animation.At(animRenderVars.idxFrame)->Strips()-1);
+			ImGui::SameLine();
+	        if (ImGui::Button("Prev##StripFocus")) {
+	        	if (animRenderVars.idxStrip > 0) {
+	        		animRenderVars.idxStrip -= 1;
+	        		animRenderVars.idxLineInStrip = 0;
+	        	}
+	        }
+	        ImGui::SameLine();
+	        if (ImGui::Button("Next##StripFocus")) {
+	        	if (animRenderVars.idxStrip <= animation.At(animRenderVars.idxFrame)->Strips()) {
+	        		animRenderVars.idxStrip += 1;
+	        		animRenderVars.idxLineInStrip = 0;
+	        	}
+	        }
+
+	        int idxStrip = animRenderVars.idxStrip;
+	        if (idxStrip > animation.At(animRenderVars.idxFrame)->Strips()) {
+	        	idxStrip = animation.At(animRenderVars.idxFrame)->Strips()-1;
+	        }
+
+	        //printf("idxStrip: %d\n", idxStrip);
+
+
+	        int numLinesInStrip = animation.At(animRenderVars.idxFrame)->At(idxStrip).Points();
+	        ImGui::Text("Points in Strip: %d", numLinesInStrip);
+	        ImGui::Text("Lines");
+			ImGui::SameLine();
+	        ImGui::SliderInt("##Line", &animRenderVars.idxLineInStrip, 0, numLinesInStrip);
+			ImGui::SameLine();
+	        if (ImGui::Button("Prev##Line")) {
+	        	if (animRenderVars.idxLineInStrip > 0) {
+	        		animRenderVars.idxLineInStrip -= 1;
+	        	}
+	        }
+	        ImGui::SameLine();
+	        if (ImGui::Button("Next##Line")) {
+	        	if (animRenderVars.idxLineInStrip <= numLinesInStrip) {
+	        		animRenderVars.idxLineInStrip += 1;
+	        	}
+	        }
+
+	        // Point ptStart = animation.At(animRenderVars.idxFrame)->At(idxStrip).At(animRenderVars.idxLineInStrip);
+	        // Point ptEnd = animation.At(animRenderVars.idxFrame)->At(idxStrip).At(animRenderVars.idxLineInStrip+1);
+
+	        float vLen = animation.At(animRenderVars.idxFrame)->At(idxStrip).Len(animRenderVars.idxLineInStrip, animRenderVars.idxLineInStrip+1);
+	        float iLen = animation.At(animRenderVars.idxFrame)->At(idxStrip).FixLen(animRenderVars.idxLineInStrip, animRenderVars.idxLineInStrip+1);
+
+	        ImGui::Text("Line, %d -> %d, length: %f (%f)", 0,0,vLen,iLen);
+
+        }
+
+
+        // Other stuff
+        ImGui::Checkbox("Highlight First Point", &animRenderVars.highLightFirstInStrip);
+
+
+
+        // ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats as a color
+        // if (ImGui::Button("Demo Window"))                       // Use buttons to toggle our bools. We could use Checkbox() as well.
+        //     show_demo_window ^= 1;
+        // if (ImGui::Button("Another Window")) 
+        //     show_another_window ^= 1;
+        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    }
+
+    // 2. Show another simple window. In most cases you will use an explicit Begin/End pair to name the window.
+    if (show_another_window)
+    {
+        ImGui::Begin("Another Window", &show_another_window);
+        ImGui::Text("Hello from another window!");
+        ImGui::End();
+    }
+
+    // 3. Show the ImGui demo window. Most of the sample code is in ImGui::ShowDemoWindow().
+    if (show_demo_window)
+    {
+        ImGui::SetNextWindowPos(ImVec2(650, 20), ImGuiCond_FirstUseEver); // Normally user code doesn't need/want to call this because positions are saved in .ini file anyway. Here we just want to make the demo initial state a bit more friendly!
+        ImGui::ShowDemoWindow(&show_demo_window);
+    }
+
+    // Rendering
+    int display_w, display_h;
+    glfwGetFramebufferSize(window, &display_w, &display_h);
+    glViewport(0, 0, display_w, display_h);
+    glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui::Render();
+    glfwSwapBuffers(window);
+}
+void UIWindow::Close() {
+    // Cleanup
+    ImGui_ImplGlfwGL2_Shutdown();	
+}
+
+void UIWindow::SetPos(int x, int y) {
+	glfwSetWindowPos(window, x, y);
+}
 
 
 void BassPlayer::Initialize() {
@@ -102,163 +282,78 @@ void BassPlayer::StartPlaying() {
 
 }
 
-
-struct Point {
-	uint8_t x;
-	uint8_t y;
-	float fx;	// Normalized range (-1 .. 1
-	float fy;	// Normalized range (-1 .. 1)
-};
-
-class Strip {
-private:
-	uint8_t nPoints;
-	std::vector<Point> points;
-private:
-	void Normalize();
-public:
-	void Load(FILE *f);
-	int Points() { return points.size(); }
-	void Render();
-};
-
-class Frame {
-private:
-	uint8_t nStrips;
-	std::vector<Strip> strips;
-private:
-public:
-	void Load(FILE *f);
-	int Strips() { return strips.size(); }
-	void Render();
-};
-
-class Animation {
-private:
-	std::vector<Frame *> frames;
-public:
-	void LoadFromFile(const char *filename);
-	int Frames() { return frames.size(); }
-	void Render(int frame);	
-};
-
-
-void Strip::Normalize() {
-	for (int i=0;i<points.size();i++) {
-		points[i].fx = (float(points[i].x) - 128.0) / 128.0;
-		points[i].fy = (float(points[i].y) - 128.0) / 128.0;
-
-		// printf("      %f, %f\n", points[i].fx, points[i].fy);
-	}
-}
-void Strip::Load(FILE *f) {	
-	fread(&nPoints, sizeof(uint8_t), 1, f);
-	//printf("Points: %d",nPoints);
-	for (int p=0;p<nPoints;p++) {
-		uint8_t x,y;
-		Point pt;
-		fread(&pt.x, sizeof(uint8_t), 1, f);
-		fread(&pt.y, sizeof(uint8_t), 1, f);
-		points.push_back(pt);
-	}
-	Normalize();
-}
-void Strip::Render() {
-	glBegin(GL_LINE_STRIP);
-	for (int i=0;i<points.size();i++) {
-		glVertex3f(points[i].fx, points[i].fy, 0);
-	}
-	glEnd();
-}
-
-void Frame::Load(FILE *f) {
-	fread(&nStrips, sizeof(uint8_t), 1, f);
-	//printf("  Strips In Frame: %d\n", nStrips);
-	for(int i=0;i<nStrips;i++) {
-		Strip s;
-		//printf("    Strip: %d, ", i);
-		s.Load(f);
-		//printf("\n");
-		strips.push_back(s);
-	}
-}
-
-void Frame::Render() {
-	for (int i=0;i<strips.size();i++) {
-		strips[i].Render();
-	}
-}
-
-
-void Animation::LoadFromFile(const char *filename) {
-	FILE *f = fopen(filename,"r");
-	if (f == NULL) {
-		perror("Unable to open strips file");
-	}
-
-	int frameCounter = 0;
-	while(!feof(f)) {
-		//printf("Frame: %d, array: %d\n", frameCounter, frames.size());
-		Frame *frame = new Frame();
-		frame->Load(f);
-		this->frames.push_back(frame);
-		// This is a frame!
-		frameCounter++;
-		// if (frameCounter > 143) {
-		// 	break;
-		// }
-	}	
-	printf("Frames loaded: %d\n", this->Frames());
-
-	fclose(f);
-}
-
-void Animation::Render(int frame) {
-	frames[frame]->Render();
-}
-
-
 /////////////////////////
-static Animation animation;
+static RenderWindow window;
+static UIWindow ui;
 
-void testFrameLoader() {
-	animation.LoadFromFile("strips_full_movie_0.95_opt.db");
+void testFrameLoader(char *filename) {
+	//animation.LoadFromFile("strips_full_movie_0.95_opt.db");
+	animation.LoadFromFile(filename);
+	animRenderVars.numStrips = animation.MaxStrips();
+
 }
 
 int main(int argc, char **argv) {
-	BassPlayer music;
-	testFrameLoader();
-	music.Initialize();
-	//exit(1);
-	Initialize();
-	OpenWindow(1280,720,"render", false);
-	music.StartPlaying();
-	glfwSetTime(0);	// Reset timer on first frame..
-	while(!ShouldWindowClose()) {
-		UpdateWindow();
-		glfwPollEvents();
+	// TODO: ARGS!
+	char *filename = NULL;
+//	printf("ARGS: %d\n", argc);
+	if (argc > 1) {
+		filename = argv[1];
+	} else {
+		printf("Usage: player <db file>\n");
+		exit(1);
 	}
-	CloseWindow();
+	testFrameLoader(filename);
+	animation.At(0)->Dump();
+	Initialize();
+	window.OpenWindow(1280,720,"render", false);
+	window.SetWindowPos(0,0);
+	ui.Open();
+	ui.SetPos(1280,0);
+	glfwSetTime(0);	// Reset timer on first frame..
+	printf("Entering rendering loop\n");
+	while(!window.ShouldWindowClose()) {
+		glfwPollEvents();		
+		//printf("UI Render\n");
+		ui.Render();
+		window.BeginRender();
+		Render(glfwGetTime());
+		window.EndRender();
+	}
+	window.CloseWindow();
+	ui.Close();
 	glfwTerminate();
 	return 0;
 }
+
+void Initialize() {
+	if (!glfwInit()) {
+		fprintf(stderr, "Failed to initialize GLFW\n");
+		exit(EXIT_FAILURE);
+	} else {
+		int major, minor, rev;
+		glfwGetVersion(&major, &minor, &rev);
+
+		printf("GLFW Version %d.%d.%d\n",major,minor,rev);
+	}
+
+}
+
 
 static int frameCounter = 0;
 
 // Callback from UpdateWindow
 void RenderAnimation(float tRender) {
-	frameCounter = (int)(tRender * 30.0);
+	frameCounter = animRenderVars.idxFrame;//(int)(tRender * 30.0);
 	if (frameCounter > animation.Frames()) {
 		frameCounter = 0;
 	}
 	char buffer[256];
 	sprintf(buffer,"frame: %d", frameCounter);
-	SetWindowTitle(buffer);
+	window.SetWindowTitle(buffer);
 
-
-
-	glRotatef(0,1,0,0);
-	glRotatef(48*sin(tRender),0,1,0);
+	//glRotatef(0,1,0,0);
+	//glRotatef(48*sin(tRender),0,1,0);
 	//glRotatef(rotation->v->vector[2],0,0,1);
 
 	glBegin(GL_LINE_LOOP);
@@ -267,8 +362,8 @@ void RenderAnimation(float tRender) {
 		glVertex3f( 1,-1,0);
 		glVertex3f(-1,-1, 0);
 	glEnd();
-	glLineWidth(6.0);
-	animation.Render(frameCounter);
+	glLineWidth(2.0);
+	animation.Render(frameCounter, animRenderVars);
 }
 
 
@@ -281,7 +376,8 @@ void Render(float tRender) {
 }
 
 void SetupRenderContext() {
-	glViewport(0, 0, px_width, px_height);
+
+	glViewport(0, 0, window.GetWidth(), window.GetHeight());
 	// Clear color buffer to black
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);	
@@ -289,7 +385,7 @@ void SetupRenderContext() {
 	// Select and setup the projection matrix
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	gluPerspective(fov, (GLfloat) px_width/ (GLfloat) px_height, 1.0f, 1000.0f);
+	gluPerspective(fov, (GLfloat) window.GetWidth() / (GLfloat) window.GetHeight(), 1.0f, 1000.0f);
 
 	// Select and setup the modelview matrix
 	glMatrixMode(GL_MODELVIEW);
@@ -327,166 +423,4 @@ void DrawAxis() {
 
 }
 
-void Initialize() {
-	if (!glfwInit()) {
-		fprintf(stderr, "Failed to initialize GLFW\n");
-		exit(EXIT_FAILURE);
-	} else {
-		int major, minor, rev;
-		glfwGetVersion(&major, &minor, &rev);
-
-		printf("GLFW Version %d.%d.%d",major,minor,rev);
-	}
-
-}
-
-void OpenWindow(int width, int height, const char *name, bool fullScreen) {
-	int count;
-	GLFWmonitor **monitors = glfwGetMonitors(&count);
-	for(int i=0;i<count;i++) {
-		int wmm, hmm;
-		printf("Monitor: %d\n", i);
-		const GLFWvidmode *currentmode = glfwGetVideoMode(monitors[i]);
-		glfwGetMonitorPhysicalSize(monitors[i], &wmm, &hmm);
-
-		const double dpi = currentmode->width / (wmm / 25.4);
-		printf("  Width(mm) : %d\n", wmm);
-		printf("  Height(mm): %d\n", hmm);
-		printf("  DPI.......: %f\n", dpi);
-		printf("  Resolution: %d x %d at %dhz\n", currentmode->width, currentmode->height, currentmode->refreshRate);
-	}
- 
-	if (!fullScreen) {
-		window = glfwCreateWindow(width, height, name, NULL, NULL);
-	} else {
-		GLFWmonitor *usemon = glfwGetPrimaryMonitor();
-
-		if (preferred_monitor <= count) {
-			printf("Selecting monitor: %d\n", preferred_monitor);
-			usemon = monitors[preferred_monitor];
-		}
-		// if (count > 1) {
-		//  	usemon = monitors[1];
-		// }
-
-		const GLFWvidmode *currentmode = glfwGetVideoMode(usemon);
-		// in fullscreen w=0, h=0 means use default monitor resolution
-		if ((width==0) || (height==0)) {
-			width = currentmode->width;
-			height = currentmode->height;
-		}
-
-
-		printf("Creating window, resolution: %d x %d\n", width, height);
-		glfwWindowHint(GLFW_REFRESH_RATE, currentmode->refreshRate);
-		window = glfwCreateWindow(width, height, name, usemon, NULL);
-		//glfwSetWindowSize(window, width, height);
-
-		const GLFWvidmode *selectedMode = glfwGetVideoMode(usemon);
-		printf("Mode is: %d x %d at %dhz\n", selectedMode->width, selectedMode->height, selectedMode->refreshRate);
-
-	}
-	if (window == NULL) {
-		fprintf(stderr, "Failed to open GLFW window\n");
-		return;
-	}
-//	glfwSetWindowUserPointer(window, (void *)this);
-//	glfwSetCharCallback(window, glfwOnChar);
-	glfwSetKeyCallback(window, glfwOnKey);
-
-}
-
-void CloseWindow() {
-	glfwDestroyWindow(window);
-}
-
-
-void SetWindowTitle(const char *title) {
-	glfwSetWindowTitle(window, title);
-}
-
-bool ShouldWindowClose() {
-	bool shouldClose = glfwWindowShouldClose(window);
-	return (shouldClose | quitPlayer);
-}
-void SetWindowPos(int xp, int yp)
-{
-	glfwSetWindowPos(window, xp, yp);
-}
-void MakeWindowCurrent()
-{
-	glfwMakeContextCurrent(window);
-	glfwGetFramebufferSize(window, &px_width, &px_height);
-}
-void UpdateWindow() {
-	MakeWindowCurrent();
-	glViewport(0, 0, px_width, px_height);	
-	Render(glfwGetTime());
-	glfwSwapBuffers(window);
-}
-
-
-void OnKeyDown(int key, int scancode, int mods) {
-	float dt = 1;	// default is jump one second
-	if ((mods & GLFW_MOD_ALT)) {
-		dt = 10;		// jump 10 seconds if ALT is pressed
-	}
-	switch(key) {
-		case GLFW_KEY_ESCAPE :
-			quitPlayer = true;
-			break;
-		case GLFW_KEY_SPACE :	// pause replay
-			if (pausePlayer) {
-				glfwSetTime(tPause);
-				pausePlayer = false;
-			}
-			else {
-				tPause = glfwGetTime();
-				pausePlayer = true;
-			}
-			break;
-		case GLFW_KEY_LEFT :	// fast forward in time
-			{				
-				if (!pausePlayer) {
-					float nt = glfwGetTime() - dt;
-					if (nt < 0) nt = 0;
-					glfwSetTime(nt); 					
-				} else {
-					tPause -= dt;
-					if (tPause < 0) tPause = 0;
-				}
-
-			}
-			break;
-		case GLFW_KEY_RIGHT :	// reverse time
-			{
-				if (!pausePlayer) {
-					float nt = glfwGetTime() + dt;
-					glfwSetTime(nt); 									
-				} else {
-					tPause += dt;
-				}
-			}
-			break;
-	} // switch
-}
-
-
-
-// static void glfwOnChar(GLFWwindow *window, unsigned int code) {
-// 	//printf("glfwOnChar, %c\n",code);
-// 	BaseWindow *pThis = (BaseWindow *)glfwGetWindowUserPointer(window);
-// 	if (pThis != NULL) {
-// 		pThis->OnChar(code);
-// 	}
-// }
-static void glfwOnKey(GLFWwindow *window, int key, int scancode, int action, int mods) {
-	//printf("glfwOnKey: key:%d, scancode: %d, action: %d, mods: %d\n", key, scancode, action, mods);
-	switch(action) {
-		case GLFW_PRESS   : OnKeyDown(key, scancode, mods); break;
-//		case GLFW_RELEASE : OnKeyUp(key, scancode, mods); break;
-//		case GLFW_REPEAT  : OnKeyDown(key, scancode, mods); break;
-	}
-
-}
 
