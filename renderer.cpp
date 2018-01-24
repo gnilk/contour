@@ -1,12 +1,7 @@
 //
 // Simplistic vector animation renderer for OpenGL
 //
-// TODO: 
-// - Add render to texture
-// - Add blur filter
-// - Add blossom filter
-// + more interesting stuff (try to highlight certain points in the line strip)
-//  
+// Note: This depends on imgui in ext/imgui
 //
 #include <stdio.h>
 #include <stdlib.h>
