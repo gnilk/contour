@@ -14,14 +14,16 @@ package main
 // 3) Convert contourimage to a point cluster
 // 4) Traverse the point cluster and create lines segments
 //
-// TODO:
-//   Optimization
+// Default Optimization is local range search
 //          1) Track the block a point belongs to in the 'func (b* Block)Scan'
 //             - This requires replacing the 'image.Point' with something else
 //          2) In the ExtractVector 'calculatedistance' function only search current+neigbouring blocks
 //
 //          This should limit the amount of pixels we need to touch!
+// Use '-F' to switch on FullRangeSearch (all pixels) - complicated pictures will take > 10sec to process while local search take <1sec
 //
+//
+// TODO:
 //
 // Cheat Sheet for creating the line-segment video:
 //
@@ -83,16 +85,10 @@ import (
 	"path"
 	"sort"
 	"strconv"
+	"time"
 
 	vector "contour/vector"
 )
-
-type Block struct {
-	X       int
-	Y       int
-	img     image.Image
-	visited bool
-}
 
 type OpMode int64
 
@@ -133,6 +129,7 @@ type Config struct {
 	Rescale                  bool
 	DataMode                 DataMode
 	SaveEmptySegmentFile     bool
+	OptimizedRangeSearch     bool
 	NumFrames                int
 }
 
@@ -159,6 +156,7 @@ var glbConfig = Config{
 	Rescale:                  true,
 	DataMode:                 DataModeInt8,
 	SaveEmptySegmentFile:     false,
+	OptimizedRangeSearch:     true,
 	NumFrames:                0,
 }
 
@@ -176,11 +174,15 @@ func main() {
 		log.Fatal("Missing output file/directory")
 	}
 
+	tStart := time.Now()
+
 	if glbConfig.Mode == OpModeGenerate {
 		generateDataFromConfig()
 	} else if glbConfig.Mode == OpModeRender {
 		renderDataFromConfig()
 	}
+	duration := time.Now().Sub(tStart)
+	log.Printf("Took: %f sec", duration.Seconds())
 
 	//	log.Fatal("Can't mix input/output types both must be either directories or files")
 
@@ -239,6 +241,9 @@ func parseOptions() {
 						break
 					case 'r':
 						glbConfig.Mode = OpModeRender
+						break
+					case 'F':
+						glbConfig.OptimizedRangeSearch = false
 						break
 					case 'm':
 						glbConfig.GenerateIntermediateData = true
@@ -310,6 +315,7 @@ func printHelpAndExit() {
 	fmt.Println("  e   Save empty segment files, default: false\n")
 	fmt.Printf("   w   Generate: Rescale to width. Render: Use this width for destination bitmap, default: %d\n", glbConfig.Width)
 	fmt.Println("  h   Generate: Rescale to height, keep zero to respect aspect ration from with, default: %d\n", glbConfig.Height)
+	fmt.Println("  F   Switch on full range search (slow) when looking for points, default: false/off\n")
 	fmt.Println("  ?   This screen")
 	fmt.Println("Options for generating")
 	fmt.Printf("  gl   <int>    Grey threshold level for contour lines when scanning bitmap, default: %d\n", glbConfig.GreyThresholdLevel)
@@ -328,6 +334,7 @@ func printHelpAndExit() {
 // Runs the contour algorithm and saves to a strip file
 func generateDataFromConfig() {
 
+	log.Println("Optimized Range Search: ", glbConfig.OptimizedRangeSearch)
 	isInputDir := isDir(glbConfig.Input)
 	if isInputDir {
 		log.Printf("Multi Processing Mode: %s -> %s\n", glbConfig.Input, glbConfig.Output)
@@ -496,8 +503,8 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) (int, []*LineSe
 	numSegments := 0
 
 	blocks := NewBlockMapFromImage(img)
-	points := blocks.ExtractContour()
-	lineSegments := ExtractVectors(points)
+	contourCluster := blocks.ExtractContour()
+	lineSegments := ExtractVectors(contourCluster)
 	if lineSegments != nil {
 		if glbConfig.ListVectors == true {
 			DumpLineSegments(lineSegments)
@@ -779,6 +786,14 @@ func WriteLineSegmentsByteChannel(writer io.Writer, ch int, lineSegments []*Line
 //
 // Block map constructors
 //
+type Block struct {
+	X       int
+	Y       int
+	img     image.Image
+	visited bool
+	points  []*ContourPoint
+}
+
 func NewBlockMap() BlockMap {
 	return make(BlockMap)
 }
@@ -806,6 +821,7 @@ func NewBlock(img image.Image, x, y int) Block {
 		Y:       y,
 		img:     img,
 		visited: false,
+		points:  make([]*ContourPoint, 0),
 	}
 	return block
 }
@@ -875,7 +891,7 @@ func (b *Block) ReadGreyPixel(x, y int) color.Gray {
 	return c
 }
 
-func (b *Block) Scan(pnts []image.Point) []image.Point {
+func (b *Block) Scan(pnts []*ContourPoint) []*ContourPoint {
 
 	filledPixels := b.NumFilledPixels()
 	if filledPixels == 0 {
@@ -906,7 +922,9 @@ func (b *Block) Scan(pnts []image.Point) []image.Point {
 			delta_y := math.Abs(float64(u.Y) - float64(c.Y))
 			if (delta_x > t) || (delta_y > t) {
 				//fmt.Printf("(%d,%d),C:%d, L:%d, U:%d, dx:%f, dy:%f\n", b.X+x, b.Y+y, c.Y, l.Y, u.Y, delta_x, delta_y)
-				pnts = append(pnts, image.Pt(b.X+x, b.Y+y))
+				cpt := NewContourPoint(image.Pt(b.X+x, b.Y+y), b)
+				b.points = append(b.points, &cpt) // Add same point to this block
+				pnts = append(pnts, &cpt)
 			}
 		}
 	}
@@ -937,7 +955,7 @@ func (blocks BlockMap) Down(block *Block) *Block {
 
 var scannedBlocks int = 0
 
-func (blocks BlockMap) Scan(pnts []image.Point, b *Block) []image.Point {
+func (blocks BlockMap) Scan(pnts []*ContourPoint, b *Block) []*ContourPoint {
 	if b.IsVisited() {
 		return pnts
 	}
@@ -967,11 +985,16 @@ func (blocks BlockMap) Scan(pnts []image.Point, b *Block) []image.Point {
 
 // Contour point - better word is probably ClusterPoint
 type ContourPoint struct {
-	pt   image.Point
-	used bool
+	PIndex int // Index to self
+	pt     image.Point
+	block  *Block
+	used   bool
 }
 
-type ContourCluster []ContourPoint
+type ContourCluster struct {
+	points   []*ContourPoint
+	blockMap *BlockMap
+}
 
 type LineSegment struct {
 	ptStart  image.Point
@@ -1002,6 +1025,10 @@ func (cp *ContourPoint) ResetUsage() {
 	cp.used = false
 }
 
+func (cp *ContourPoint) GetBlock() *Block {
+	return cp.block
+}
+
 func (cp *ContourPoint) Distance(other *ContourPoint) float64 {
 	return VecLen(cp.Pt(), other.Pt())
 }
@@ -1022,31 +1049,43 @@ func (s ByDistance) Less(i, j int) bool {
 	return s.PointDistances[i].Distance < s.PointDistances[j].Distance
 }
 
-func (blocks BlockMap) ExtractContour() []image.Point {
-	points := make([]image.Point, 0)
+func (blocks BlockMap) ExtractContour() ContourCluster {
+	points := make([]*ContourPoint, 0)
 	for _, b := range blocks {
 		if !b.IsVisited() {
 			points = blocks.Scan(points, b)
 		}
 	}
-	return points
+	// Set index of point in array - we use this later on...
+	for i, pt := range points {
+		pt.PIndex = i
+	}
+
+	cluster := ContourCluster{
+		points:   points,
+		blockMap: &blocks,
+	}
+
+	return cluster
 }
 
-func NewContourPoint(pt image.Point) ContourPoint {
+func NewContourPoint(pt image.Point, b *Block) ContourPoint {
 	cp := ContourPoint{
-		pt:   pt,
-		used: false,
+		pt:    pt,
+		used:  false,
+		block: b,
 	}
 	return cp
 }
-func ContourClusterFromPointArray(points []image.Point) ContourCluster {
-	cps := ContourCluster{}
-	for _, p := range points {
-		cp := NewContourPoint(p)
-		cps = append(cps, cp)
-	}
-	return cps
-}
+
+// func ContourClusterFromPointArray(points []image.Point) ContourCluster {
+// 	cps := ContourCluster{}
+// 	for _, p := range points {
+// 		cp := NewContourPoint(p)
+// 		cps = append(cps, cp)
+// 	}
+// 	return cps
+// }
 
 func NewLineSegment(a, b image.Point) LineSegment {
 	ls := LineSegment{
@@ -1141,8 +1180,9 @@ func (ls *LineSegment) ToBytes() *bytes.Buffer {
 //
 // Cluster functions
 //
-func (cluster ContourCluster) Len() int               { return len(cluster) }
-func (cluster ContourCluster) At(i int) *ContourPoint { return &cluster[i] }
+func (cluster ContourCluster) GetBlockMap() *BlockMap { return cluster.blockMap }
+func (cluster ContourCluster) Len() int               { return len(cluster.points) }
+func (cluster ContourCluster) At(i int) *ContourPoint { return cluster.points[i] }
 func (cluster ContourCluster) NewLineSegment(a, b int) *LineSegment {
 	ls := LineSegment{
 		ptStart:  cluster.At(a).Pt(),
@@ -1152,17 +1192,80 @@ func (cluster ContourCluster) NewLineSegment(a, b int) *LineSegment {
 	}
 	return &ls
 }
-
 func (cluster *ContourCluster) NewVector(a, b int) *vector.Vec2D {
 	v := vector.NewVec2DFromPoints(cluster.At(a).Pt(), cluster.At(b).Pt())
 	return &v
 }
 
-//
-// CalcPointDistance calculates the distance from point indicated by pidx to all other unused points
-//
-func (cluster *ContourCluster) CalcPointDistance(pidx int) []PointDistance {
+func (b *Block) CalcPointDistance(cp *ContourPoint, distances []PointDistance) []PointDistance {
+	for _, pt := range b.points {
+		if pt.PIndex == cp.PIndex {
+			continue
+		}
+		if pt.IsUsed() {
+			continue
+		}
 
+		pDist := PointDistance{
+			Distance: cp.Distance(pt),
+			PIndex:   pt.PIndex,
+		}
+		distances = append(distances, pDist)
+	}
+	return distances
+}
+
+// Does a local search
+func (cluster *ContourCluster) LocalSearchPointDistance(pidx int) []PointDistance {
+	porigin := cluster.At(pidx)
+	distances := make([]PointDistance, 0)
+
+	blockOrigin := porigin.GetBlock()
+
+	distances = blockOrigin.CalcPointDistance(porigin, distances)
+	left := cluster.blockMap.Left(blockOrigin)
+	if left != nil {
+		distances = left.CalcPointDistance(porigin, distances)
+	}
+	right := cluster.blockMap.Right(blockOrigin)
+	if right != nil {
+		distances = right.CalcPointDistance(porigin, distances)
+	}
+
+	up := cluster.blockMap.Up(blockOrigin)
+	if up != nil {
+		distances = up.CalcPointDistance(porigin, distances)
+
+		left = cluster.blockMap.Left(up)
+		if left != nil {
+			distances = left.CalcPointDistance(porigin, distances)
+		}
+		right := cluster.blockMap.Right(up)
+		if right != nil {
+			distances = right.CalcPointDistance(porigin, distances)
+		}
+	}
+
+	down := cluster.blockMap.Down(blockOrigin)
+	if down != nil {
+		distances = down.CalcPointDistance(porigin, distances)
+		left = cluster.blockMap.Left(down)
+		if left != nil {
+			distances = left.CalcPointDistance(porigin, distances)
+		}
+		right := cluster.blockMap.Right(down)
+		if right != nil {
+			distances = right.CalcPointDistance(porigin, distances)
+		}
+	}
+	// cluster.blockMap.Left(down).CalcPointDistance(porigin, distances)
+	// cluster.blockMap.Right(down).CalcPointDistance(porigin, distances)
+
+	return distances
+}
+
+func (cluster *ContourCluster) FullSearchPointDistance(pidx int) []PointDistance {
+	//	Full range search - no block optimization, all points still in cluster taken into account
 	porigin := cluster.At(pidx)
 	distances := make([]PointDistance, 0)
 	for i := 0; i < cluster.Len(); i++ {
@@ -1176,11 +1279,30 @@ func (cluster *ContourCluster) CalcPointDistance(pidx int) []PointDistance {
 
 		pdist := PointDistance{
 			Distance: porigin.Distance(cluster.At(i)),
-			PIndex:   i,
+			PIndex:   cluster.At(i).PIndex,
 		}
 		distances = append(distances, pdist)
 	}
+
 	return distances
+}
+
+//
+// CalcPointDistance calculates the distance from point indicated by pidx to all other unused points
+//
+func (cluster *ContourCluster) CalcPointDistance(pidx int) []PointDistance {
+
+	if glbConfig.OptimizedRangeSearch {
+		res := cluster.LocalSearchPointDistance(pidx)
+		if len(res) > 4 {
+			return res
+		}
+		if glbConfig.Verbose {
+			log.Printf("CalcPointDistance, local search revealed too few points, switching on full search!")
+		}
+	}
+	return cluster.FullSearchPointDistance(pidx)
+
 }
 
 // This is the actual tracing algorithm.
@@ -1219,6 +1341,15 @@ func (cluster *ContourCluster) NextSegment(idxStart int) *LineSegment {
 	if glbConfig.Verbose {
 		log.Printf("NextSegment, idxStart: %d, number of pds: %d\n", idxStart, len(pds))
 	}
+
+	// DUMMY!
+	// for i := 0; i < 20; i++ {
+	// 	if i >= len(pds) {
+	// 		break
+	// 	}
+	// 	log.Printf("%d: %d, %f\n", i, pds[i].PIndex, pds[i].Distance)
+	// }
+	// os.Exit(1)
 
 	longLineMode := false
 	var vPrev *vector.Vec2D = nil
@@ -1272,14 +1403,25 @@ func (cluster *ContourCluster) NextSegment(idxStart int) *LineSegment {
 		idxPrevious = pd.PIndex
 	}
 
-	return nil
+	//log.Printf("all PDS processed!!\n")
+
+	if idxPrevious == -1 {
+		// Bad??
+		log.Println("No previous points, to few points left in cluster!!!")
+		return nil
+	}
+	if glbConfig.Verbose {
+		log.Printf("New Segment, out of range, iter: %d, idxPrevious: %d, dp: %f\n", len(pds), idxPrevious, dp)
+	}
+	// Line extends out from the search range, this generally happen in optimized search
+	return cluster.NewLineSegment(idxStart, idxPrevious)
 }
 
 // ExtractVectors is used to extract continues linesegments from a set of points
-func ExtractVectors(points []image.Point) []*LineSegment {
+func ExtractVectors(cluster ContourCluster) []*LineSegment {
 
 	// Take all points and wrap them up so we can work with them. This add a bit of meta data
-	cluster := ContourClusterFromPointArray(points)
+	//cluster := ContourClusterFromPointArray(points)
 
 	if glbConfig.Verbose {
 		log.Printf("Cluster Size: %d\n", cluster.Len())
@@ -1291,9 +1433,7 @@ func ExtractVectors(points []image.Point) []*LineSegment {
 	}
 
 	lineSegments := make([]*LineSegment, 0)
-
 	dbgPoints := 0
-
 	idxStart := 0
 	//	log.Printf("Extract Vectors, idxStart: %d\n", idxStart)
 
@@ -1303,7 +1443,7 @@ func ExtractVectors(points []image.Point) []*LineSegment {
 		// nil => no more segments can be produced from the cluster, leave!
 		if ls == nil {
 			if glbConfig.Verbose {
-				log.Printf("Next segment returned nil - leaving")
+				log.Printf("Next segment returned nil - leaving, processed: %d of %d\n", i, cluster.Len())
 			}
 			break
 		}
