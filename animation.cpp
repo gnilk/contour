@@ -105,10 +105,13 @@ void Frame::Render() {
 }
 
 void Frame::Dump() {
+	int totalPoints = 0;
 	printf("  Strips In Frame: %d\n", strips.size());
 	for(int i=0;i<strips.size();i++) {
 		printf("    %d, Points: %d\n", i, strips[i].Points());
+		totalPoints += strips[i].Points();
 	}
+	printf("  Total Num Points: %d\n", totalPoints);
 }
 
 
@@ -117,6 +120,8 @@ void Animation::LoadFromFile(const char *filename) {
 	if (f == NULL) {
 		perror("Unable to open strips file");
 	}
+
+	this->frames.clear();
 
 	int frameCounter = 0;
 	while(!feof(f)) {

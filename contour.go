@@ -22,6 +22,10 @@ package main
 //          This should limit the amount of pixels we need to touch!
 // Use '-F' to switch on FullRangeSearch (all pixels) - complicated pictures will take > 10sec to process while local search take <1sec
 //
+// Stats ('Bad Apple') - Execution time (6573 frames)
+//	-F -oca 0.95, 4496 seconds => 1.44 FPS
+//	-oca 0.95,  2107 seconds => 3.07 FPS
+//
 //
 // TODO:
 //
@@ -114,6 +118,7 @@ type Config struct {
 	LongLineDistance        float64
 	OptimizationCutOffAngle float64
 	ContrastFactor          float64
+	ContrastScale           float64
 	BlockSize               int
 	FilledBlockLevel        float32
 	Width                   int
@@ -142,7 +147,8 @@ var glbConfig = Config{
 	BlockSize:               64,   // Not used
 	FilledBlockLevel:        0.5,  // Not used
 	OptimizationCutOffAngle: 0.95,
-	ContrastFactor:          2,
+	ContrastFactor:          4,
+	ContrastScale:           2,
 	Width:                   255,
 	Height:                  0,
 	// Options
@@ -210,6 +216,9 @@ func parseOptions() {
 			} else if arg == "-cnt" {
 				i++
 				glbConfig.ContrastFactor, _ = strconv.ParseFloat(os.Args[i], 64)
+			} else if arg == "-cns" {
+				i++
+				glbConfig.ContrastScale, _ = strconv.ParseFloat(os.Args[i], 64)
 			} else if arg == "-oca" {
 				i++
 				glbConfig.OptimizationCutOffAngle, _ = strconv.ParseFloat(os.Args[i], 64)
@@ -481,7 +490,9 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) (int, []*LineSe
 	img = increaseImageContrast(img)
 
 	if glbConfig.GenerateIntermediateData {
-		SaveImage(img, "pre-processed.png")
+		contrastImageName := fmt.Sprintf("%s_pp_contrast.png", segmentsFile)
+		log.Printf("Saving Contrast Image to: %s\n", contrastImageName)
+		SaveImage(img, contrastImageName)
 	}
 
 	if glbConfig.Rescale {
@@ -504,6 +515,13 @@ func singleFileTest(inputFile, segmentsFile, contourFile string) (int, []*LineSe
 
 	blocks := NewBlockMapFromImage(img)
 	contourCluster := blocks.ExtractContour()
+	if glbConfig.GenerateIntermediateData {
+		contourImageName := fmt.Sprintf("%s_pp_contour.png", segmentsFile)
+		// Note: Points not rescaled yet - we operate on original resolution as far as possible
+		tmpImage := contourCluster.ImageFromCluster(width, height)
+		log.Printf("Saving Contour Image to: %s\n", contourImageName)
+		SaveImage(tmpImage, contourImageName)
+	}
 	lineSegments := ExtractVectors(contourCluster)
 	if lineSegments != nil {
 		if glbConfig.ListVectors == true {
@@ -555,8 +573,12 @@ func SaveSegmentsAsStrips(file string, lineSegments []*LineSegment) {
 
 func rescale(v uint8) uint8 {
 	tmp := float64(v) / float64(255)
-	tmp = math.Pow(tmp, glbConfig.ContrastFactor)
-	v = uint8(tmp * 255)
+	tmp = math.Pow(tmp, glbConfig.ContrastFactor) * glbConfig.ContrastScale
+	tmp = tmp * 255
+	if tmp > 255 {
+		tmp = 255
+	}
+	v = uint8(tmp)
 	return v
 }
 
@@ -827,7 +849,7 @@ func NewBlock(img image.Image, x, y int) Block {
 }
 
 func (b *Block) hashFunc(x, y int) int {
-	return (x + y*255)
+	return (x + y*1024)
 }
 
 func (b *Block) Hash() int {
@@ -1836,20 +1858,26 @@ func DrawLineSegments(lineSegments []*LineSegment, dst *image.RGBA) {
 	}
 }
 
-func (blocks BlockMap) ImageFromContour(points []image.Point, w, h int) image.Image {
+func (cluster *ContourCluster) ImageFromCluster(w, h int) image.Image {
 
 	//dst := image.NewGray(image.Rect(0, 0, w, h))
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 
-	fmt.Printf("Num Points: %d\n", len(points))
-	fmt.Printf("Scanned Blocks: %d\n", scannedBlocks)
+	// fmt.Printf("Num Points: %d\n", len(points))
+	// fmt.Printf("Scanned Blocks: %d\n", scannedBlocks)
 
-	// level := uint8(255)
-	// for _, p := range points {
-	// 	//level := uint8(i & 255)
-	// 	//dst.SetGray(p.X, p.Y, color.Gray{level})
-	// 	dst.SetRGBA(p.X, p.Y, color.RGBA{level, 0, 0, 255})
-	// }
+	level := uint8(255)
+	for i := 0; i < cluster.Len(); i++ {
+		//level := uint8(i & 255)
+		//dst.SetGray(p.X, p.Y, color.Gray{level})
+		p := cluster.At(i).Pt()
+		dst.SetRGBA(p.X, p.Y, color.RGBA{level, 0, 0, 255})
+	}
+
+	for _, b := range *cluster.blockMap {
+		OutlineBlock(dst, b.X, b.Y, b.X+8, b.Y+8, color.RGBA{0, 0, level, 64})
+	}
+
 	return dst
 }
 
@@ -1870,5 +1898,16 @@ func FillBlock(img *image.Gray, bx, by int, level uint8) {
 		for x := 0; x < 8; x++ {
 			img.SetGray(bx+x, by+y, color.Gray{level})
 		}
+	}
+}
+
+func OutlineBlock(img *image.RGBA, x1, y1, x2, y2 int, col color.RGBA) {
+	for x := x1; x < x2; x++ {
+		img.SetRGBA(x, y1, col)
+		img.SetRGBA(x, y2, col)
+	}
+	for y := y1; y < y2; y++ {
+		img.SetRGBA(x1, y, col)
+		img.SetRGBA(x2, y, col)
 	}
 }
