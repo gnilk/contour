@@ -14,6 +14,13 @@ package main
 // 3) Convert contourimage to a point cluster
 // 4) Traverse the point cluster and create lines segments
 //
+// TODO:
+//   Optimization
+//          1) Track the block a point belongs to in the 'func (b* Block)Scan'
+//             - This requires replacing the 'image.Point' with something else
+//          2) In the ExtractVector 'calculatedistance' function only search current+neigbouring blocks
+//
+//          This should limit the amount of pixels we need to touch!
 //
 //
 // Cheat Sheet for creating the line-segment video:
