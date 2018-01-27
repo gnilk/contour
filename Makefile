@@ -48,7 +48,15 @@ PLAYER_SRC_FILES = \
 	renderer.cpp \
 	animation.cpp \
 	RenderWindow.cpp \
+	ui.cpp \
+	uicontrollers.cpp \
 	imgui_impl_glfw_gl2.cpp \
+	logger.cpp \
+	process.cpp \
+	inifile.cpp \
+	tokenizer.cpp \
+	bitmap.cpp \
+	picopng.cpp \
 
 IMGUI_OBJS = ext/imgui/imgui.o ext/imgui/imgui_demo.o ext/imgui/imgui_draw.o
 
@@ -65,7 +73,7 @@ all: player
 	$(CC) -c $(CFLAGS)  $< -o $@
 
 
-player: $(PLAYER_OBJ_FILES) $(IMGUI_OBJS) animation.h RenderWindow.h
+player: $(PLAYER_OBJ_FILES) $(IMGUI_OBJS) animation.h RenderWindow.h ui.h uicontrollers.h inifile.h process.h tokenizer.h
 	$(CC) $(CFLAGS) $(PLAYER_OBJ_FILES) $(PLAYER_LINK_LIBS) $(IMGUI_OBJS) -o player
 
 clean:

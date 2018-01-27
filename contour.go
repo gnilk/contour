@@ -10,9 +10,15 @@ package main
 //
 // Outline of algorithm:
 // 1) Read an image to greyscale
+// 2) Increase contrast (per pixel) - set both factors to '1' to disabled
+//        v = pow(v, contrast_factor) * contrast_scale
 // 2) Detect outline based on Luma values -> ContourImage
+//        control threshold with gl - greyscale level
 // 3) Convert contourimage to a point cluster
+//
 // 4) Traverse the point cluster and create lines segments
+//
+// 5) Optimize line segments by merging adjacent with small deviation
 //
 // Default Optimization is local range search
 //          1) Track the block a point belongs to in the 'func (b* Block)Scan'
@@ -232,6 +238,11 @@ func parseOptions() {
 			} else if arg == "-frames" {
 				i++
 				glbConfig.NumFrames, _ = strconv.Atoi(os.Args[i])
+			} else if arg == "-bs" {
+				i++
+				glbConfig.BlockSize, _ = strconv.Atoi(os.Args[i])
+			} else if arg == "-defaults" {
+				printDefaultsAndExit()
 			} else if arg == "-datamode" {
 				i++
 				mode := os.Args[i]
@@ -328,7 +339,9 @@ func printHelpAndExit() {
 	fmt.Println("  ?   This screen")
 	fmt.Println("Options for generating")
 	fmt.Printf("  gl   <int>    Grey threshold level for contour lines when scanning bitmap, default: %d\n", glbConfig.GreyThresholdLevel)
+	fmt.Printf("  bs   <int>    BlockSize for localized search, default: %d\n", glbConfig.BlockSize)
 	fmt.Printf("  cnt <float>   Image contrast factor, default: %f\n", glbConfig.ContrastFactor)
+	fmt.Printf("  cns <float>   Image contrast scale, default: %f\n", glbConfig.ContrastScale)
 	fmt.Printf("  lcd <float>   Line Cutoff Distance, break condition for new segment, default: %f\n", glbConfig.LineCutOffDistance)
 	fmt.Printf("  lca <float>   Line Cutoff Angle, break condition for new segment, default: %f\n", glbConfig.LineCutOffAngle)
 	fmt.Printf("  lld <float>   Long Line Distance when searching for reference vector, default: %f\n", glbConfig.LongLineDistance)
@@ -336,8 +349,22 @@ func printHelpAndExit() {
 	fmt.Printf("  oca <float>   Optimization Cutoff Angle, break condition for line segment concatination, default: %f\n", glbConfig.OptimizationCutOffAngle)
 	fmt.Printf("Other options:")
 	fmt.Printf("  frames <int>   Cut off generation after X number of frames\n")
-	fmt.Printf("  datamode <int8/int16>  Specify bitsize in segment file (read/write), default is int16\n")
-	os.Exit(1)
+	//fmt.Printf("  datamode <int8/int16>  Specify bitsize in segment file (read/write), default is int16\n")
+	os.Exit(0)
+}
+
+func printDefaultsAndExit() {
+	fmt.Printf("[defaults]\n")
+	fmt.Printf("gl=%d\n", glbConfig.GreyThresholdLevel)
+	fmt.Printf("bs=%d\n", glbConfig.BlockSize)
+	fmt.Printf("cnt=%f\n", glbConfig.ContrastFactor)
+	fmt.Printf("cns=%f\n", glbConfig.ContrastScale)
+	fmt.Printf("lcd=%f\n", glbConfig.LineCutOffDistance)
+	fmt.Printf("lca=%f\n", glbConfig.LineCutOffAngle)
+	fmt.Printf("lld=%f\n", glbConfig.LongLineDistance)
+	fmt.Printf("ccd=%f\n", glbConfig.ClusterCutOffDistance)
+	fmt.Printf("oca=%f\n", glbConfig.OptimizationCutOffAngle)
+	os.Exit(0)
 }
 
 // Runs the contour algorithm and saves to a strip file
@@ -826,9 +853,9 @@ func NewBlockMapFromImage(img image.Image) BlockMap {
 	width := img.Bounds().Dx()
 	height := img.Bounds().Dy()
 
-	for x := 0; x < width/8; x++ {
-		for y := 0; y < height/8; y++ {
-			block := NewBlock(img, x*8, y*8)
+	for x := 0; x < width/glbConfig.BlockSize; x++ {
+		for y := 0; y < height/glbConfig.BlockSize; y++ {
+			block := NewBlock(img, x*glbConfig.BlockSize, y*glbConfig.BlockSize)
 			blocks[block.Hash()] = &block
 			//blocks = append(blocks, block)
 		}
@@ -857,17 +884,17 @@ func (b *Block) Hash() int {
 }
 
 func (b *Block) Left() int {
-	return b.hashFunc(b.X-8, b.Y)
+	return b.hashFunc(b.X-glbConfig.BlockSize, b.Y)
 }
 func (b *Block) Right() int {
-	return b.hashFunc(b.X+8, b.Y)
+	return b.hashFunc(b.X+glbConfig.BlockSize, b.Y)
 }
 
 func (b *Block) Up() int {
-	return b.hashFunc(b.X, b.Y-8)
+	return b.hashFunc(b.X, b.Y-glbConfig.BlockSize)
 }
 func (b *Block) Down() int {
-	return b.hashFunc(b.X, b.Y+8)
+	return b.hashFunc(b.X, b.Y+glbConfig.BlockSize)
 }
 
 func (b *Block) IsVisited() bool {
@@ -889,8 +916,8 @@ func (b *Block) IsFilled() bool {
 
 func (b *Block) NumFilledPixels() int {
 	filledPixels := 0
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := 0; y < glbConfig.BlockSize; y++ {
+		for x := 0; x < glbConfig.BlockSize; x++ {
 			clr := color.GrayModel.Convert(b.img.At(b.X+x, b.Y+y)).(color.Gray)
 			// Should be threshold
 			if clr.Y > glbConfig.GreyThresholdLevel {
@@ -921,8 +948,8 @@ func (b *Block) Scan(pnts []*ContourPoint) []*ContourPoint {
 	}
 	t := float64(glbConfig.GreyThresholdLevel)
 
-	for y := 0; y < 9; y++ {
-		for x := 0; x < 9; x++ {
+	for y := 0; y < glbConfig.BlockSize+1; y++ {
+		for x := 0; x < glbConfig.BlockSize+1; x++ {
 			if !image.Pt(b.X+x, b.Y+y).In(b.img.Bounds()) {
 				continue
 			}
@@ -1875,7 +1902,7 @@ func (cluster *ContourCluster) ImageFromCluster(w, h int) image.Image {
 	}
 
 	for _, b := range *cluster.blockMap {
-		OutlineBlock(dst, b.X, b.Y, b.X+8, b.Y+8, color.RGBA{0, 0, level, 64})
+		OutlineBlock(dst, b.X, b.Y, b.X+glbConfig.BlockSize, b.Y+glbConfig.BlockSize, color.RGBA{0, 0, level, 64})
 	}
 
 	return dst
@@ -1894,8 +1921,8 @@ func (blocks BlockMap) ImageFromFilledBlocks(w, h int) image.Image {
 }
 
 func FillBlock(img *image.Gray, bx, by int, level uint8) {
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := 0; y < glbConfig.BlockSize; y++ {
+		for x := 0; x < glbConfig.BlockSize; x++ {
 			img.SetGray(bx+x, by+y, color.Gray{level})
 		}
 	}
