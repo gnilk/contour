@@ -2,6 +2,7 @@
 #include <fstream>
 
 #include "picopng.h"
+#include "lodepng.h"	// for saving
 #include "bitmap.h"
 
 using namespace gnilk;
@@ -145,3 +146,30 @@ Bitmap *Bitmap::LoadPNGImage(void *buffer, long numbytes) {
 	return bitmap;
 
 }
+
+// New stuff
+
+void Bitmap::SaveToFile(std::string filename) {
+	lodepng_encode32_file(filename.c_str(), (const unsigned char *)buffer, width, height);
+}
+
+void Bitmap::SetRGBA(int x, int y, unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+	if (!Inside(x,y)) {
+		return;
+	}
+	unsigned char *pixel = &buffer[4 * (x + y * width)];
+	pixel[0] = r;
+	pixel[1] = g;
+	pixel[2] = b;
+	pixel[3] = a;
+}
+
+bool Bitmap::Inside(int x, int y) {
+	if ((x >=0) && (x<width)) {
+		if ((y>=0) && (y<height)) {
+			return true;
+		}
+	}
+	return false;
+}
+

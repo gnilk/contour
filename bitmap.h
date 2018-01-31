@@ -27,6 +27,11 @@ namespace gnilk {
 		unsigned char *Buffer(int x, int y);
 
 		Bitmap *CopyToNew(int x, int y, int w, int h);
+
+		// New Stuff
+		bool Inside(int x, int y);
+	 	void SetRGBA(int x, int y, unsigned char r, unsigned char g, unsigned char b, unsigned char a);
+		void SaveToFile(std::string filename);
 	};
 
 

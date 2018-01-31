@@ -150,7 +150,7 @@ var glbConfig = Config{
 	LineCutOffDistance:      10.0, // Creates new segment when distance is too far also not dependent on the distance vector in case of sparse clusters
 	LineCutOffAngle:         0.5,  // Creates a new segment when deviating angle hits this threshold, only comes in play when we can derive a directional vector (see: LongLineDistance)
 	LongLineDistance:        3.0,  // Distance to search before capturing the directional vector for the segment
-	BlockSize:               64,   // Not used
+	BlockSize:               8,    // Not used
 	FilledBlockLevel:        0.5,  // Not used
 	OptimizationCutOffAngle: 0.95,
 	ContrastFactor:          4,
@@ -616,7 +616,17 @@ func increaseImageContrast(img image.Image) image.Image {
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
-			c := img.At(x, y).(color.RGBA)
+			//c := img.At(x, y).(color.RGBA)
+			rawcol := img.At(x, y)
+			r, g, b, a := rawcol.RGBA()
+
+			c := color.RGBA{
+				R: uint8(r >> 8),
+				G: uint8(g >> 8),
+				B: uint8(b >> 8),
+				A: uint8(a >> 8),
+			}
+
 			c.R = rescale(c.R)
 			c.G = rescale(c.G)
 			c.B = rescale(c.B)
@@ -1114,6 +1124,8 @@ func (blocks BlockMap) ExtractContour() ContourCluster {
 		points:   points,
 		blockMap: &blocks,
 	}
+
+	fmt.Printf("ContourPoints: %d\n", len(points))
 
 	return cluster
 }

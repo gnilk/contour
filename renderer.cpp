@@ -19,8 +19,10 @@
 #include "ui.h"
 #include "logger.h"
 #include "process.h"
+#include "contour.h"
 
 using namespace gnilk;
+using namespace gnilk::contour;
 
 void reloadFrame();
 
@@ -118,15 +120,44 @@ static ImageController imageController;
 // 	animRenderVars.numStrips = animation.MaxStrips();
 // }
 
+#define UI_MODE 1
+#define GEN_MODE 2
+
 int main(int argc, char **argv) {
 	// TODO: ARGS!
+	int mode = GEN_MODE;
+
 	char *filename = NULL;
-//	printf("ARGS: %d\n", argc);
+
 	if (argc > 1) {
-		filename = argv[1];
+		for (int i=1;i<argc;i++) {
+			if (argv[i][0] == '-') {
+				switch(argv[i][1]) {
+					case 'r' :
+						mode = UI_MODE;
+						break;
+					default:
+						printf("ERROR: Unknown arg '%s'\n", argv[i]);
+						exit(1);
+				}
+			} else {
+				filename = argv[i];
+			}
+		}
+		if (filename == NULL) {
+			printf("Usage: player [-r] <db file>\n");
+		}
 	} else {
-		printf("Usage: player <db file>\n");
+		printf("Usage: player [-r] <db file>\n");
 		exit(1);
+	}
+
+	// Generate file
+	if (mode == GEN_MODE) {
+		Bitmap *bitmap = Bitmap::LoadPNGImage(std::string(filename));
+		Trace tracer;
+		tracer.ProcessImage(bitmap->Buffer(), bitmap->Width(), bitmap->Height());
+		exit(1);		
 	}
 
 	Initialize();

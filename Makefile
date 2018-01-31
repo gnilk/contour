@@ -25,7 +25,7 @@ LIB_FILES = -framework Cocoa -framework OpenGL -framework IOKit -framework CoreV
 
 
 
-CPPFLAGS = -g -arch x86_64 -stdlib=libc++ -std=c++11
+CPPFLAGS = -g -arch x86_64 -stdlib=libc++ -std=c++11 -O3
 CPPFLAGS += -isysroot $(SDK)
 CPPFLAGS += $(INCLUDE_FILES)
 
@@ -57,6 +57,9 @@ PLAYER_SRC_FILES = \
 	tokenizer.cpp \
 	bitmap.cpp \
 	picopng.cpp \
+	contour.cpp \
+	lodepng.cpp \
+	timer.cpp \
 
 IMGUI_OBJS = ext/imgui/imgui.o ext/imgui/imgui_demo.o ext/imgui/imgui_draw.o
 
@@ -73,7 +76,7 @@ all: player
 	$(CC) -c $(CFLAGS)  $< -o $@
 
 
-player: $(PLAYER_OBJ_FILES) $(IMGUI_OBJS) animation.h RenderWindow.h ui.h uicontrollers.h inifile.h process.h tokenizer.h
+player: $(PLAYER_OBJ_FILES) $(IMGUI_OBJS) animation.h RenderWindow.h ui.h uicontrollers.h inifile.h process.h tokenizer.h contour.h vec2d.h contour_internal.h
 	$(CC) $(CFLAGS) $(PLAYER_OBJ_FILES) $(PLAYER_LINK_LIBS) $(IMGUI_OBJS) -o player
 
 clean:
